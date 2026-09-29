@@ -131,8 +131,13 @@ func Migrate() error {
 // dedupeAPIKeyNames renames duplicate api_key names (the oldest row keeps the
 // name, newer rows get a -dupN suffix) so the UNIQUE index on name — a later
 // addition — can be created on databases written before the constraint
-// existed. Idempotent: no-op when there are no duplicates.
+// existed. Idempotent: no-op when there are no duplicates. On a fresh database
+// the table does not exist yet (AutoMigrate creates it right after), so the
+// pre-check is skipped — querying a missing table would abort startup.
 func dedupeAPIKeyNames() error {
+	if !DB.Migrator().HasTable(&model.APIKey{}) {
+		return nil
+	}
 	var names []string
 	err := DB.Model(&model.APIKey{}).
 		Select("name").Group("name").Having("COUNT(*) > 1").

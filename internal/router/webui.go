@@ -26,10 +26,13 @@ import (
 	"gorm.io/datatypes"
 )
 
-const webuiVersion = "0.12.0"
+// webuiVersion is the service version. It is a var (not const) so release
+// pipelines can inject the git tag at link time:
+//   -X app-task/internal/router.webuiVersion=<tag>
+var webuiVersion = "0.12.0"
 
 // Version is the exported service version (CLI `--version` / `at info`).
-const Version = webuiVersion
+var Version = webuiVersion
 
 const (
 	// Brute-force throttle: max failed credentials per client IP per window,

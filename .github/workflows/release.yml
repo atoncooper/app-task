@@ -1,0 +1,49 @@
+name: Release
+
+# 打 v* tag 时自动发布：
+#   1. GitHub Release（自动生成 release notes）+ 附带 Linux 二进制（amd64/arm64
+#      tar.gz，内含 default.yaml 与 .env.example，版本号注入二进制）
+#   2. 版本化容器镜像由 docker.yml 在同一个 tag 上发布到 GHCR
+#      （ghcr.io/atoncooper/mind-base-app-task:v0.12.0 等）
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Build binaries (linux amd64/arm64)
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=${arch} go build -trimpath \
+              -ldflags="-s -w -X app-task/internal/router.webuiVersion=${VERSION}" \
+              -o /tmp/app-task .
+            mkdir -p "dist/app-task_${VERSION}_linux-${arch}"
+            cp /tmp/app-task "dist/app-task_${VERSION}_linux-${arch}/"
+            cp default.yaml .env.example "dist/app-task_${VERSION}_linux-${arch}/" 2>/dev/null || true
+            tar -czf "dist/app-task_${VERSION}_linux-${arch}.tar.gz" -C "dist/app-task_${VERSION}_linux-${arch}" .
+          done
+          cd dist
+          sha256sum app-task_*.tar.gz > checksums.txt
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/checksums.txt

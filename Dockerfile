@@ -16,8 +16,12 @@ RUN go mod download || true
 # Copy source
 COPY . .
 
+# APP_VERSION: injected by CI (git tag / branch name) into the binary so
+# `at --version` and /api/info report the built version.
+ARG APP_VERSION=dev
+
 # Static build (CGO disabled for distroless)
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/app-task .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath     -ldflags="-s -w -X app-task/internal/router.webuiVersion=${APP_VERSION}"     -o /out/app-task .
 
 # ---- runtime image ----
 FROM gcr.io/distroless/static-debian12:nonroot

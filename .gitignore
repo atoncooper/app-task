@@ -1,0 +1,12 @@
+# secrets / local overrides
+.env
+
+# auto-generated TLS certs (server.tls)
+certs/
+
+# runtime logs (log.output=file/both)
+logs/
+*.log
+
+# go
+*.test

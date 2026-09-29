@@ -28,7 +28,8 @@ import (
 
 // webuiVersion is the service version. It is a var (not const) so release
 // pipelines can inject the git tag at link time:
-//   -X app-task/internal/router.webuiVersion=<tag>
+//
+//	-X app-task/internal/router.webuiVersion=<tag>
 var webuiVersion = "0.12.0"
 
 // Version is the exported service version (CLI `--version` / `at info`).

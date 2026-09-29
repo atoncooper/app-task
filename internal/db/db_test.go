@@ -1,9 +1,14 @@
 package db
 
 // Tests for DSN building: sqlalchemy-style conversion, param appending, and
-// the config-provided timeouts/TLS.
+// the config-provided timeouts/TLS. Plus migration on a fresh database.
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
+)
 
 func TestToGormDSN(t *testing.T) {
 	params := map[string]string{
@@ -43,5 +48,41 @@ func TestDSNParams(t *testing.T) {
 	// base params always present
 	if p["charset"] != "utf8mb4" || p["parseTime"] != "True" || p["loc"] != "Local" {
 		t.Fatalf("base params = %v", p)
+	}
+}
+
+// TestMigrateFreshDatabase guards the fresh-install path: Migrate must create
+// the full schema on an empty database. It used to abort on the api_key dedupe
+// pre-check, which queried the table before AutoMigrate created it
+// (Error 1146 on MySQL, "no such table" on SQLite) — a crash loop on every
+// first boot.
+func TestMigrateFreshDatabase(t *testing.T) {
+	gdb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	sqlDB, err := gdb.DB()
+	if err != nil {
+		t.Fatalf("get *sql.DB: %v", err)
+	}
+	defer sqlDB.Close()
+
+	prev := DB
+	DB = gdb
+	defer func() { DB = prev }()
+
+	if err := Migrate(); err != nil {
+		t.Fatalf("migrate on fresh database: %v", err)
+	}
+	for _, table := range []string{"api_key", "task", "task_log", "webui_user", "cluster_node"} {
+		if !DB.Migrator().HasTable(table) {
+			t.Fatalf("table %s not created", table)
+		}
+	}
+
+	// A second run must stay idempotent (dedupe runs against the now-existing
+	// table and finds no duplicates).
+	if err := Migrate(); err != nil {
+		t.Fatalf("re-migrate: %v", err)
 	}
 }

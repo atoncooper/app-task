@@ -131,8 +131,21 @@ go test -run 'TestConcurrent|TestFenced|TestDeadNode' -v ./bench/   # 并发/一
 go test -bench . -benchmem -run '^$' ./bench/  # 基准（内存 SQLite，绝对值非生产数）
 ```
 
+**MySQL 集成测试**（bench/mysql_integration_test.go，设 DSN 才跑，否则跳过）：
+内存 SQLite 覆盖不了 InnoDB 行锁/SKIP LOCKED、严格模式（NO_ZERO_DATE——
+Error 1292 零日期 bug 就是 SQLite 测不出来的）和 DSN loc=UTC 时间管线，
+改认领/回收/fencing/时间相关代码后必须跑：
+
+```bash
+docker compose -f docker-compose.test.yml up -d --wait
+APPTASK_TEST_MYSQL_DSN='mysql://app_task:app-task@127.0.0.1:13306/app_task_test' \
+  go test ./bench/ -run 'TestMySQL' -v -count=1
+docker compose -f docker-compose.test.yml down
+```
+
 - **新写并发/一致性代码必须同步写不变量测试**（参考 bench/concurrency_test.go
   的 I1–I6 编号法：认领排他/栅栏/排空完整/邮件唯一/cron 原子/接管隔离）；
+  涉及 MySQL 特有语义的（锁/严格模式/时间序列化）同步补 TestMySQL* 集成版；
 - **PR 前必须本地跑过新测试**——CI 是 Linux，本地 Windows 的 `-race` 不可用，
   靠测试纪律兜底（bench 并发测试曾三次在 CI 抓出本地没跑的问题）；
 - 基准结果（内存 SQLite）不作为生产指标，仅用于路径对比与回归。

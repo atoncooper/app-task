@@ -90,6 +90,25 @@ func TestHeartbeatWritesWeight(t *testing.T) {
 
 // ── 准入闸门：pre_approved 模式下未预登记的节点拒绝注册 ───────────────
 
+// JoinNode must not persist Go zero times: '0000-00-00' is rejected by MySQL
+// strict mode on INSERT (Error 1292) — the web/CLI pre-registration create
+// path used to fail exactly that way.
+func TestJoinNodeFillsZeroTimes(t *testing.T) {
+	setupClusterDB(t)
+	if _, err := repo.JoinNode(&model.ClusterNode{
+		NodeID: "jn", Weight: 2, State: repo.NodeStatePendingJoin, JoinedVia: "web", InvitedBy: "admin",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	row, err := repo.GetClusterNode("jn")
+	if err != nil || row == nil {
+		t.Fatalf("get joined node = %v, %v", row, err)
+	}
+	if row.StartedAt.IsZero() || row.LastHeartbeat.IsZero() {
+		t.Fatalf("joined row has zero time: started_at=%v last_heartbeat=%v", row.StartedAt, row.LastHeartbeat)
+	}
+}
+
 func TestAdmissionPreApproved(t *testing.T) {
 	setupClusterDB(t)
 

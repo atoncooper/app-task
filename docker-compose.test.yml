@@ -1,0 +1,33 @@
+# ================================================================
+# 一次性 MySQL 测试实例（仅本地/CI 集成测试用，不参与部署）
+# ================================================================
+# bench/mysql_integration_test.go 需要真 MySQL 8（InnoDB 行锁、SKIP LOCKED、
+# 严格模式、DSN loc=UTC 时间管线）——内存 SQLite 覆盖不了这些语义。
+#
+# 用法（数据落 tmpfs，容器删除即清空）：
+#   docker compose -f docker-compose.test.yml up -d --wait
+#   APPTASK_TEST_MYSQL_DSN='mysql://app_task:app-task@127.0.0.1:13306/app_task_test' \
+#     go test ./bench/ -run 'TestMySQL' -v
+#   docker compose -f docker-compose.test.yml down
+#
+# 端口 13306 避开 compose 主文件里的 app-task(8001)/app-task-ha(8011)，
+# 也避开常见本机 3306。
+
+services:
+  app-task-test-mysql:
+    image: mysql:8.4
+    container_name: app-task-test-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: app_task_test
+      MYSQL_USER: app_task
+      MYSQL_PASSWORD: app-task
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    ports:
+      - "127.0.0.1:13306:3306"
+    tmpfs:
+      - /var/lib/mysql
+    # 官方镜像无内置 healthcheck；--wait 退化为等 running，测试代码自带
+    # 连接重试（60s），首次启动的初始化窗口由它兜底。

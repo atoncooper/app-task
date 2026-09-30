@@ -45,8 +45,9 @@ func TestDSNParams(t *testing.T) {
 	if _, has := p["writeTimeout"]; has {
 		t.Fatal("zero value must be omitted")
 	}
-	// base params always present
-	if p["charset"] != "utf8mb4" || p["parseTime"] != "True" || p["loc"] != "Local" {
+	// base params always present; loc must stay UTC (storage discipline —
+	// a host-TZ-dependent loc would reinterpret stored datetimes on TZ change)
+	if p["charset"] != "utf8mb4" || p["parseTime"] != "True" || p["loc"] != "UTC" {
 		t.Fatalf("base params = %v", p)
 	}
 }

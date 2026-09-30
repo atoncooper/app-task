@@ -124,7 +124,8 @@ func redirectFlash(c *gin.Context, path, kind, format string, args ...any) {
 // ── display shaping ─────────────────────────────────────────────────
 
 // fmtTime renders wall-clock in the business timezone: DB values come back
-// UTC-aware, and time.Local is pinned to the configured timezone (main.go), so
+// UTC-aware (the driver session is pinned to UTC, see db.dsnParams), and
+// time.Local is pinned to the configured timezone (serve.go), so
 // convert explicitly instead of formatting the stored UTC offset.
 func fmtTime(t time.Time) string { return t.In(time.Local).Format("2006-01-02 15:04:05") }
 

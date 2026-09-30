@@ -68,11 +68,18 @@ func Init(opts Options) error {
 
 // dsnParams assembles the driver params appended to every DSN: charset/parse
 // defaults plus the configured timeouts and TLS mode.
+//
+// loc is pinned to UTC, not Local: DATETIME columns store wall-clock text, so
+// the driver location decides how time.Time values are serialized. Business
+// code writes time.Now().UTC() everywhere; with loc=Local the effective zone
+// would be whatever the host TZ was at process start — a TZ change between
+// restarts (or a mixed-TZ cluster) would silently reinterpret every stored
+// datetime by the offset difference (misfiring tasks, stale heartbeats).
 func dsnParams(opts Options) map[string]string {
 	p := map[string]string{
 		"charset":   "utf8mb4",
 		"parseTime": "True",
-		"loc":       "Local",
+		"loc":       "UTC",
 	}
 	if opts.DialTimeoutSec > 0 {
 		p["timeout"] = fmt.Sprintf("%ds", opts.DialTimeoutSec)

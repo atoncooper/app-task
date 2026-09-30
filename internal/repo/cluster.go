@@ -77,6 +77,18 @@ func JoinNode(n *model.ClusterNode) (created bool, err error) {
 	}
 	if err == gorm.ErrRecordNotFound {
 		n.State = NodeStatePendingJoin
+		// A Go zero time.Time serializes to '0000-00-00', which MySQL strict
+		// mode (NO_ZERO_DATE, the 8.x default) rejects on INSERT (Error 1292).
+		// Pre-registered rows must carry real datetimes: last_heartbeat doubles
+		// as the 24h invitation clock, and started_at is replaced by the node's
+		// first heartbeat at activation.
+		now := time.Now().UTC()
+		if n.StartedAt.IsZero() {
+			n.StartedAt = now
+		}
+		if n.LastHeartbeat.IsZero() {
+			n.LastHeartbeat = now
+		}
 		return true, db.DB.Create(n).Error
 	}
 	return false, err

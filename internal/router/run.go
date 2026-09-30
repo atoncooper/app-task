@@ -50,6 +50,7 @@ func (r *Router) runScriptOnce(scriptID string, payload []byte) (*model.ScriptRu
 		Version:    latest.Version,
 		Payload:    datatypes.JSON(payload),
 		DurationMS: dur,
+		Node:       nodeIdentity,
 	}
 	switch {
 	case execErr == nil:

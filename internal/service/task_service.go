@@ -118,6 +118,7 @@ func (s *TaskService) CompleteTask(taskID, status, result, errMsg string) (strin
 		LogID:    uuid.NewString(),
 		TaskID:   taskID,
 		Executor: task.ExecutorURL,
+		Node:     task.Owner,
 		Response: result,
 		Status:   toStatus,
 		Error:    errField,

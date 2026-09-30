@@ -4,7 +4,7 @@
   <a class="btn btn-default btn-sm" href="/console/scripts/{{.Run.ScriptID}}">脚本详情</a>
   <span class="id-chip" title="{{.Run.RunID}}">{{.RunIDShort}}</span>
   <span class="label label-{{.StatusCli}}">{{.StatusText}}</span>
-  <span class="muted">v{{.Run.Version}} · {{.Run.DurationMS}} ms · {{.CreatedAtStr}}</span>
+  <span class="muted">v{{.Run.Version}} · {{.Run.DurationMS}} ms · {{.CreatedAtStr}}{{if .Run.Node}} · 执行节点 <span class="mono-cell">{{.Run.Node}}</span>{{end}}</span>
 </div>
 
 <div class="panel panel-default">

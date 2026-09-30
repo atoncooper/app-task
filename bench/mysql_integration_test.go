@@ -331,6 +331,12 @@ func TestMySQLSchedulerDispatchEndToEnd(t *testing.T) {
 	if logs != tasksN {
 		t.Fatalf("task_log success rows = %d, want %d", logs, tasksN)
 	}
+	// Node traceability over real MySQL: every row records the executing node.
+	var noNode int64
+	db.DB.Model(&model.TaskLog{}).Where("node = ? OR node = ''", "mysql-itest").Count(&noNode)
+	if noNode != tasksN {
+		t.Fatalf("task_log rows without correct node = %d, want 0", tasksN-noNode)
+	}
 }
 
 // TestMySQLAtLeastOnceRedelivery proves I3 over real IO: a dispatch that is

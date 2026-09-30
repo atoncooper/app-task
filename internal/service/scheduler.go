@@ -433,6 +433,7 @@ func (s *Scheduler) writeLog(task *model.Task, status string, durationMS int64, 
 		Response:   truncate(response, 2000),
 		Status:     status,
 		DurationMS: durationMS,
+		Node:       task.Owner,
 		Error:      errField,
 	})
 }

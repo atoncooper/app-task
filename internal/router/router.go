@@ -139,6 +139,13 @@ var clusterMgr *cluster.Manager
 // SetClusterManager attaches the cluster node roster.
 func SetClusterManager(m *cluster.Manager) { clusterMgr = m }
 
+// nodeIdentity is this instance's scheduler id (SetNodeIdentity from main);
+// on-demand script runs record it as the executing node (traceability).
+var nodeIdentity string
+
+// SetNodeIdentity attaches the scheduler's instance id.
+func SetNodeIdentity(id string) { nodeIdentity = id }
+
 func (r *Router) registerRoutes(e *gin.Engine) {
 	e.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "healthy", "service": "app-task"})

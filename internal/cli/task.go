@@ -43,6 +43,7 @@ type apiTaskLog struct {
 	TaskID     string  `json:"task_id"`
 	TriggerAt  string  `json:"trigger_at"`
 	Executor   string  `json:"executor"`
+	Node       string  `json:"node"`
 	Status     string  `json:"status"`
 	DurationMS int64   `json:"duration_ms"`
 	Response   string  `json:"response"`

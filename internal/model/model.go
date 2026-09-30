@@ -64,8 +64,11 @@ type TaskLog struct {
 	Response   string    `gorm:"column:response;type:text" json:"response,omitempty"`
 	Status     string    `gorm:"column:status;size:16;not null" json:"status"` // success / failed / timeout / retry
 	DurationMS int64     `gorm:"column:duration_ms" json:"duration_ms"`
-	Error      *string   `gorm:"column:error;type:text" json:"error,omitempty"`
-	CreatedAt  time.Time `gorm:"column:created_at;autoCreateTime" json:"created_at"`
+	// Node is the executing instance (task.owner at claim time) — execution
+	// traceability: which cluster node ran this attempt.
+	Node      string    `gorm:"column:node;size:64" json:"node,omitempty"`
+	Error     *string   `gorm:"column:error;type:text" json:"error,omitempty"`
+	CreatedAt time.Time `gorm:"column:created_at;autoCreateTime" json:"created_at"`
 }
 
 func (TaskLog) TableName() string { return "task_log" }
@@ -160,6 +163,7 @@ type ScriptRun struct {
 	Error      *string        `gorm:"column:error;type:text" json:"error,omitempty"`
 	Logs       *string        `gorm:"column:logs;type:text" json:"logs,omitempty"` // ctx.log lines, newline-joined
 	DurationMS int64          `gorm:"column:duration_ms" json:"duration_ms"`
+	Node       string         `gorm:"column:node;size:64" json:"node,omitempty"` // instance that executed this run
 	CreatedAt  time.Time      `gorm:"column:created_at;autoCreateTime" json:"created_at"`
 }
 

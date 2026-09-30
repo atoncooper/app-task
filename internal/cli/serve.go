@@ -213,8 +213,10 @@ func runServer(defaultYAML []byte) error {
 	// cert/key pair, or an auto-generated self-signed dev certificate with
 	// daily rotation checks, see internal/certgen).
 	handler := router.New(taskSvc, emailSvc, notifySvc, luaExec, cfg)
+
 	router.SetSchedulerStats(sched.Stats)
 	router.SetClusterManager(clusterMgr)
+	router.SetNodeIdentity(instanceID)
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	srv := &http.Server{Addr: addr, Handler: handler}
 

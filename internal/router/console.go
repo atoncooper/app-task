@@ -265,6 +265,7 @@ func shapeTask(j *model.Task, idLen int) taskRow {
 
 type taskLogRow struct {
 	TriggerAt, TaskID, TaskIDShort, Executor, ExecutorShort string
+	Node                                                    string
 	StatusText, StatusClass, Duration                       string
 	Response, ResponseShort, Error, ErrorShort              string
 }
@@ -284,6 +285,7 @@ func shapeTaskLog(l *model.TaskLog, cellLen int) taskLogRow {
 		TaskIDShort:   trunc(l.TaskID, 16),
 		Executor:      l.Executor,
 		ExecutorShort: trunc(l.Executor, 28),
+		Node:          trunc(l.Node, 24),
 		StatusText:    st,
 		StatusClass:   sc,
 		Duration:      duration(l.DurationMS),

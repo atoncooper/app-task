@@ -82,6 +82,32 @@ func TestScheduler_SyncSuccess(t *testing.T) {
 
 // ── 异步：202 + async=true → running（等回调）───────────────────────
 
+// TestSchedulerRecordsNode proves execution traceability: the task_log row
+// must carry the claiming instance id (task.owner) as its node.
+func TestSchedulerRecordsNode(t *testing.T) {
+	setupTestDB(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	reg := executor.NewRegistry()
+	reg.Register("http", mustHTTPExecutor(t).Handler())
+	sched := NewScheduler(reg, SchedulerOptions{Interval: 30 * time.Second, Owner: "node-a"})
+	svc := NewTaskService()
+	taskID := mustRegister(t, svc, 1, "http", `{}`, srv.URL, false, 0)
+
+	sched.tick()
+
+	logs, _ := repo.ListTaskLogs(taskID, 10)
+	if len(logs) != 1 {
+		t.Fatalf("logs = %d, want 1", len(logs))
+	}
+	if logs[0].Node != "node-a" {
+		t.Fatalf("task_log node = %q, want node-a", logs[0].Node)
+	}
+}
+
 func TestScheduler_AsyncAccepted(t *testing.T) {
 	setupTestDB(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

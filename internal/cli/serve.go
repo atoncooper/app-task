@@ -47,6 +47,16 @@ func runServer(defaultYAML []byte) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
+	// Business timezone: cron expressions and log/console timestamps use
+	// time.Local, so pin it BEFORE anything else runs. Storage is immune to
+	// this (the DB driver session is pinned to UTC, see db.dsnParams) — this
+	// only affects cron semantics and how humans see wall-clock times.
+	if loc, err := time.LoadLocation(cfg.Timezone); err == nil {
+		time.Local = loc
+	} else {
+		slog.Warn("invalid timezone, falling back to UTC", "tz", cfg.Timezone, "err", err)
+	}
+
 	// Logging (slog; level/format from log config, debug flag bumps info->debug)
 	logLevel := cfg.Log.Level
 	if logLevel == "" {
@@ -106,15 +116,6 @@ func runServer(defaultYAML []byte) error {
 	if err := repo.EnsureDefaultAdmin(); err != nil {
 		slog.Error("seed default webui admin failed", "err", err)
 		os.Exit(1)
-	}
-
-	// Business timezone: cron expressions are interpreted in time.Local, so
-	// pin it to the configured timezone (Asia/Shanghai) before parsing any
-	// schedules. Storage stays UTC-aware; this only affects cron semantics.
-	if loc, err := time.LoadLocation(cfg.Timezone); err == nil {
-		time.Local = loc
-	} else {
-		slog.Warn("invalid timezone, falling back to UTC", "tz", cfg.Timezone, "err", err)
 	}
 
 	// Services: app-task is a pure scheduler — task registration + completion

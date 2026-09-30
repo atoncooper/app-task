@@ -188,7 +188,15 @@ func NextTriggerForTask(expr string, from time.Time, calendarID string) (time.Ti
 	if calendarID == "" {
 		return NextCronTrigger(expr, from)
 	}
-	dates, err := repo.ListBizCalendarDates(calendarID)
+	// 任务引用的是日历名称（biz_calendar.name 唯一键），先解析成 uuid 主键。
+	cal, err := repo.GetBizCalendarByName(calendarID)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("load business calendar %q: %w", calendarID, err)
+	}
+	if cal == nil {
+		return time.Time{}, fmt.Errorf("business calendar %q not found (deleted? re-point the task)", calendarID)
+	}
+	dates, err := repo.ListBizCalendarDates(cal.CalendarID)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("load business calendar %q: %w", calendarID, err)
 	}

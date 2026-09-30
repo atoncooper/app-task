@@ -59,7 +59,7 @@
         <div class="col-sm-10">
           <div class="code-editor cm-host" data-code-editor="json" style="height:180px">
             <textarea name="config" id="ch-config" spellcheck="false"
-              placeholder='钉钉/飞书：{"webhook":"https://...","sign_secret":"SEC..."}&#10;邮件组：{"to":["ops@x.com"]}&#10;通用 webhook：{"url":"https://...","body":"{\"msgtype\":\"markdown\",\"markdown\":{\"content\":\"{{ "{{.text}}" }}\"}}","headers":{}}'></textarea>
+              placeholder='钉钉/飞书/Teams：{"webhook":"https://..."}（钉钉/飞书可加 "sign_secret"）&#10;邮件组：{"to":["ops@x.com"]}&#10;通用 webhook：{"url":"https://...","body":"{\"msgtype\":\"markdown\",\"markdown\":{\"content\":\"{{ "{{.text}}" }}\"}}","headers":{}}'></textarea>
           </div>
           <span class="help-block">写入后加密保存、不可再查看；加签密钥与 webhook 地址均为凭据。任务 payload 里用 {"channel":"名称"} 引用。</span>
         </div>

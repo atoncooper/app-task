@@ -16,7 +16,7 @@ import (
 func newChannelCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "channel",
-		Short: "通知渠道管理（notify 任务投递目标：钉钉/飞书/webhook/邮件组）",
+		Short: "通知渠道管理（notify 任务投递目标：钉钉/飞书/Teams/webhook/邮件组）",
 	}
 	cmd.AddCommand(
 		newChannelLsCmd(),
@@ -98,7 +98,7 @@ func newChannelAddCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&name, "name", "", "渠道名称（小写 [a-z0-9_-]，2–64 位）")
-	cmd.Flags().StringVar(&chType, "type", "", "email | dingtalk | feishu | webhook")
+	cmd.Flags().StringVar(&chType, "type", "", "email | dingtalk | feishu | webhook | teams")
 	cmd.Flags().StringVar(&config, "config", "", "config JSON（按类型：webhook/加签密钥/收件人/报文模板）")
 	_ = cmd.MarkFlagRequired("name")
 	_ = cmd.MarkFlagRequired("type")

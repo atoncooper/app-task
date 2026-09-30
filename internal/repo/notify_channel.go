@@ -14,12 +14,13 @@ import (
 )
 
 // Notify channel types (payload "channel" selects the sender; keep in sync
-// with service/notify.go sender registry).
+// with service/notify.go sender registry and the router's channelTypeSet).
 const (
 	ChannelTypeEmail    = "email"
 	ChannelTypeDingTalk = "dingtalk"
 	ChannelTypeFeishu   = "feishu"
 	ChannelTypeWebhook  = "webhook"
+	ChannelTypeTeams    = "teams"
 )
 
 // ErrChannelNotFound is returned when a channel name does not resolve.

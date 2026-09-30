@@ -70,7 +70,7 @@ func (r *Router) pageChannels(c *gin.Context) {
 		BaseData:   newBase(c, "channels", "通知渠道", "notify 任务按名称引用渠道投递（webhook 凭据加密存储，写入后不可查看）"),
 		Items:      items,
 		CipherOK:   r.cipher != nil,
-		TypeKeys:   []string{repo.ChannelTypeEmail, repo.ChannelTypeDingTalk, repo.ChannelTypeFeishu, repo.ChannelTypeWebhook},
+		TypeKeys:   []string{repo.ChannelTypeEmail, repo.ChannelTypeDingTalk, repo.ChannelTypeFeishu, repo.ChannelTypeWebhook, repo.ChannelTypeTeams},
 		TypeLabels: channelTypeLabels(),
 	})
 }
@@ -81,6 +81,7 @@ func channelTypeLabels() map[string]string {
 		repo.ChannelTypeDingTalk: "钉钉机器人",
 		repo.ChannelTypeFeishu:   "飞书机器人",
 		repo.ChannelTypeWebhook:  "通用 Webhook（企微/自建）",
+		repo.ChannelTypeTeams:    "Teams 机器人（Workflows）",
 	}
 }
 
@@ -120,7 +121,7 @@ func validateChannelConfig(chType, configJSON string) error {
 		if !ok || len(to) == 0 {
 			return fmt.Errorf(`email 渠道 config 需要 {"to":["a@x.com"]}`)
 		}
-	case repo.ChannelTypeDingTalk, repo.ChannelTypeFeishu:
+	case repo.ChannelTypeDingTalk, repo.ChannelTypeFeishu, repo.ChannelTypeTeams:
 		if !nonEmpty("webhook") {
 			return fmt.Errorf("config.webhook 必填（机器人 webhook 地址）")
 		}

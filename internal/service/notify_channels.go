@@ -94,6 +94,8 @@ func (s *NotifyService) deliverWebhookish(ch *channelRow, notif *Notification, m
 		return s.sendFeishu(ch, notif, mask)
 	case repo.ChannelTypeWebhook:
 		return s.sendWebhook(ch, notif, mask)
+	case repo.ChannelTypeTeams:
+		return s.sendTeams(ch, notif, mask)
 	default:
 		return fmt.Errorf("notify channel %q: unknown type %q", ch.Name, ch.Type)
 	}
@@ -257,6 +259,42 @@ func addressListAny(raw any) []string {
 		}
 	}
 	return out
+}
+
+// ── microsoft teams ────────────────────────────────────────────────────
+// config: {"webhook": "<Power Automate Workflows 端点>"}
+//
+// The legacy Office 365 Connector incoming webhooks are retired by Microsoft;
+// the supported path is a Teams channel Workflows trigger ("when a webhook
+// request is received"), whose URL IS the credential — no signing, and
+// success is just the HTTP status (202/2xx), unlike dingtalk/feishu. The
+// message is an Adaptive Card so markdown renders natively.
+
+func (s *NotifyService) sendTeams(ch *channelRow, notif *Notification, mask *[]string) error {
+	endpoint := str(ch.Config["webhook"])
+	if endpoint == "" {
+		return fmt.Errorf("notify channel %q: webhook required (Power Automate Workflows URL)", ch.Name)
+	}
+	*mask = append(*mask, endpoint)
+	card := map[string]any{
+		"type": "message",
+		"attachments": []map[string]any{{
+			"contentType": "application/vnd.microsoft.card.adaptive",
+			"content": map[string]any{
+				"$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+				"type":    "AdaptiveCard",
+				"version": "1.4",
+				"body": []map[string]any{
+					{"type": "TextBlock", "size": "Large", "weight": "Bolder", "wrap": true, "text": notif.Title},
+					{"type": "TextBlock", "wrap": true, "text": notif.Text},
+				},
+			},
+		}},
+	}
+	if _, err := s.http.postJSON(endpoint, card); err != nil {
+		return fmt.Errorf("teams: %s", err)
+	}
+	return nil
 }
 
 // ── per-channel sliding-window rate limiter ─────────────────────────────

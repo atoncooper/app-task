@@ -75,6 +75,7 @@ scheduler:
   per_url_limit: 8              # max concurrent dispatches per executor_url (0 = unlimited)
   weight: 1                     # 本节点分任务份额（认领上限按 weight/最大存活权重 缩放；manager 等兼职节点调低）
   instance_id: ""               # claim owner identity; empty = hostname+random suffix
+  max_shards: 32                # 分片广播扇出上限（按存活节点数分裂，可被任务覆写，硬帽在此）
 
 email:
   provider: resend

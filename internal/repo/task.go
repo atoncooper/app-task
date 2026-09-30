@@ -3,6 +3,7 @@
 package repo
 
 import (
+	"errors"
 	"time"
 
 	"app-task/internal/db"
@@ -241,7 +242,9 @@ func ReclaimDispatching(olderThan time.Time) (int64, error) {
 // ListRunning returns tasks in the async "running" state awaiting a callback.
 func ListRunning(limit int) ([]model.Task, error) {
 	var tasks []model.Task
-	err := db.DB.Where("status = ?", "running").
+	// shard-broadcast parents (shard=true) are gated by their children, not by
+	// the callback timeout — they must never be swept as timed-out.
+	err := db.DB.Where("status = ? AND shard = ?", "running", false).
 		Order("updated_at ASC").Limit(limit).Find(&tasks).Error
 	return tasks, err
 }
@@ -288,6 +291,8 @@ func ExtendCronTask(src *model.Task, triggerTime time.Time) (string, bool, error
 			ExecutorURL: src.ExecutorURL,
 			Async:       src.Async,
 			CronExpr:    src.CronExpr,
+			Shard:       src.Shard,
+			ShardTotal:  0,
 			MaxRetry:    src.MaxRetry,
 			Weight:      src.Weight,
 		}).Error
@@ -296,4 +301,112 @@ func ExtendCronTask(src *model.Task, triggerTime time.Time) (string, bool, error
 		return "", false, err
 	}
 	return nextID, won, nil
+}
+
+// ── 分片广播：父任务分裂 + 收尾 ──────────────────────────────────────────
+// I7 分裂恰一次：分裂是"父任务 fenced 转 running + 插入全部子片"的单事务，
+// 认领排他保证只有恰一个节点执行分裂，事务原子性保证不存在半分裂状态。
+// I8 父任务恰一次收尾：最后一个到达终态的子片在条件更新（NOT EXISTS 未终态
+// 子片）中独占完成父任务。
+
+// errClaimLost marks a fenced transition that matched zero rows: the claim
+// was superseded (reclaimed) between claim and split.
+var errClaimLost = errors.New("claim lost before split")
+
+// SplitShardBroadcast atomically converts a claimed broadcast trigger row into
+// a running parent and inserts its total shard children (pending, immediately
+// due). Returns false (nil error) when the claim was lost — the caller must
+// NOT dispatch. Children copy the parent's business fields but are one-shot
+// (no cron extension) and cannot themselves be broadcast parents.
+func SplitShardBroadcast(parent *model.Task, total int, now time.Time) (bool, error) {
+	err := db.DB.Transaction(func(tx *gorm.DB) error {
+		res := tx.Model(&model.Task{}).
+			Where("task_id = ? AND status = ? AND claim_token = ?", parent.TaskID, StatusDispatching, parent.ClaimToken).
+			Updates(map[string]any{
+				"status":      "running",
+				"shard_total": total,
+				"updated_at":  now,
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return errClaimLost
+		}
+		for i := 0; i < total; i++ {
+			idx := i
+			child := model.Task{
+				TaskID:       uuid.NewString(),
+				UID:          parent.UID,
+				TaskType:     parent.TaskType,
+				Payload:      parent.Payload,
+				ExecutorURL:  parent.ExecutorURL,
+				TriggerTime:  now,
+				Status:       "pending",
+				MaxRetry:     parent.MaxRetry,
+				Weight:       parent.Weight,
+				ShardTotal:   total,
+				ShardIndex:   idx,
+				ParentTaskID: &parent.TaskID,
+			}
+			if err := tx.Create(&child).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if errors.Is(err, errClaimLost) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// ListShardChildren returns the shard children of a broadcast parent, by index.
+func ListShardChildren(parentTaskID string) ([]model.Task, error) {
+	var out []model.Task
+	err := db.DB.Where("parent_task_id = ?", parentTaskID).Order("shard_index ASC").Find(&out).Error
+	return out, err
+}
+
+// TryFinalizeShardParent completes a running broadcast parent once ALL its
+// children reached a terminal state: completed when every child completed,
+// failed when any child failed. The NOT EXISTS predicate is the atomic gate —
+// only the finalizing child that observes a fully-terminal sibling set wins
+// the parent update. Returns finalized=true when this call transitioned the
+// parent.
+func TryFinalizeShardParent(parentTaskID string) (finalized bool, status string, err error) {
+	var nonTerminal, failed int64
+	if err = db.DB.Model(&model.Task{}).
+		Where("parent_task_id = ? AND status NOT IN ?", parentTaskID, []string{"completed", "failed"}).
+		Count(&nonTerminal).Error; err != nil {
+		return false, "", err
+	}
+	if nonTerminal > 0 {
+		return false, "", nil
+	}
+	if err = db.DB.Model(&model.Task{}).
+		Where("parent_task_id = ? AND status = ?", parentTaskID, "failed").
+		Count(&failed).Error; err != nil {
+		return false, "", err
+	}
+	status = "completed"
+	if failed > 0 {
+		status = "failed"
+	}
+	res := db.DB.Model(&model.Task{}).
+		Where("task_id = ? AND status = ?", parentTaskID, "running").
+		Updates(map[string]any{
+			"status":      status,
+			"owner":       "",
+			"claim_token": "",
+			"claimed_at":  nil,
+			"updated_at":  time.Now().UTC(),
+		})
+	if res.Error != nil {
+		return false, "", res.Error
+	}
+	return res.RowsAffected > 0, status, nil
 }

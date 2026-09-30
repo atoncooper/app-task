@@ -125,6 +125,11 @@ func (e *HTTPExecutor) Handler() Handler {
 		// Identify the task to the executor: it needs task_id to report back via
 		// the completion callback / internal/email/send reference_id.
 		req.Header.Set("X-Task-Id", task.ID)
+		// 分片广播：执行器按片处理数据的去重/定位键
+		if v, ok := task.Meta["shard_index"]; ok {
+			req.Header.Set("X-Shard-Index", fmt.Sprint(v))
+			req.Header.Set("X-Shard-Total", fmt.Sprint(task.Meta["shard_total"]))
+		}
 		resp, err := client.Do(req)
 		if err != nil {
 			// Network-level failure (incl. TLS handshake): transient, let the

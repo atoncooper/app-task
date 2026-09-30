@@ -23,6 +23,7 @@ import (
 
 	"app-task/internal/model"
 	"app-task/internal/repo"
+	"app-task/internal/service"
 	"app-task/web"
 
 	"github.com/gin-gonic/gin"
@@ -581,6 +582,20 @@ func (r *Router) pageTaskDetail(c *gin.Context) {
 		logRows = append(logRows, shapeTaskLog(&logs[i], 0))
 	}
 
+	// 分片广播：父任务展示子片列表（片号/状态/执行实例）
+	children, _ := repo.ListShardChildren(task.TaskID)
+	shardRows := make([]shardChildRow, 0, len(children))
+	for i := range children {
+		cst, csc := statusOf(children[i].Status)
+		shardRows = append(shardRows, shardChildRow{
+			Index:       strconv.Itoa(children[i].ShardIndex),
+			StatusText:  cst,
+			StatusClass: csc,
+			Node:        trunc(children[i].Owner, 24),
+			UpdatedAt:   fmtTime(children[i].UpdatedAt),
+		})
+	}
+
 	renderPage(c.Writer, "task_detail", struct {
 		BaseData
 		Task   taskRow
@@ -590,17 +605,24 @@ func (r *Router) pageTaskDetail(c *gin.Context) {
 			K, V string
 			Long bool
 		}
-		Payload string
-		Logs    []taskLogRow
+		Payload       string
+		Logs          []taskLogRow
+		ShardChildren []shardChildRow
 	}{
-		BaseData: newBase(c, "tasks", "任务详情", ""),
-		Task:     t,
-		Status:   st,
-		Class:    sc,
-		Fields:   fields,
-		Payload:  prettyJSON(task.Payload),
-		Logs:     logRows,
+		BaseData:      newBase(c, "tasks", "任务详情", ""),
+		Task:          t,
+		Status:        st,
+		Class:         sc,
+		Fields:        fields,
+		Payload:       prettyJSON(task.Payload),
+		Logs:          logRows,
+		ShardChildren: shardRows,
 	})
+}
+
+// shardChildRow is one shard child in the broadcast progress panel.
+type shardChildRow struct {
+	Index, StatusText, StatusClass, Node, UpdatedAt string
 }
 
 func fmtStrPtr(p *string) string {
@@ -657,6 +679,7 @@ func (r *Router) handleTaskCreate(c *gin.Context) {
 	}
 	maxRetry, _ := strconv.Atoi(c.PostForm("max_retry"))
 	weight, _ := strconv.Atoi(c.PostForm("weight"))
+	shardTotal, _ := strconv.Atoi(c.PostForm("shard_total"))
 	if weight <= 0 {
 		weight = 1
 	}
@@ -684,7 +707,13 @@ func (r *Router) handleTaskCreate(c *gin.Context) {
 			return
 		}
 	}
-	taskID, err := r.taskSvc.RegisterTask(uid, taskType, payload, strings.TrimSpace(c.PostForm("executor_url")), c.PostForm("async") == "on", cron, trigger, maxRetry, weight)
+	taskID, err := r.taskSvc.RegisterTask(service.RegisterOptions{
+		UID: uid, TaskType: taskType, Payload: payload, ExecutorURL: strings.TrimSpace(c.PostForm("executor_url")),
+		Async: c.PostForm("async") == "on", CronExpr: cron, TriggerTime: trigger,
+		MaxRetry: maxRetry, Weight: weight,
+		Shard:      c.PostForm("shard") == "on",
+		ShardTotal: shardTotal,
+	})
 	if err != nil {
 		redirectFlash(c, "/console/tasks/new", "err", "创建失败：%v", err)
 		return

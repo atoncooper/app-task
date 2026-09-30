@@ -21,6 +21,24 @@
   {{else}}<div class="panel-body"><div class="empty" style="padding:20px 0">无 payload</div></div>{{end}}
 </div>
 
+{{if .ShardChildren}}
+<div class="panel panel-default">
+  <div class="panel-heading panel-head"><span class="panel-title">分片广播（{{len .ShardChildren}} 片）</span></div>
+  <table class="table table-striped data">
+    <thead><tr><th>片号</th><th>状态</th><th>执行节点</th><th>更新时间</th></tr></thead>
+    <tbody>
+    {{range .ShardChildren}}
+      <tr>
+        <td class="mono-cell">#{{.Index}}</td>
+        <td><span class="label label-{{.StatusClass}}">{{.StatusText}}</span></td>
+        <td class="mono-cell">{{.Node}}</td>
+        <td>{{.UpdatedAt}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
 <div class="panel panel-default">
   <div class="panel-heading panel-head"><span class="panel-title">执行日志（task_log）</span></div>
   <table class="table table-striped table-hover data">

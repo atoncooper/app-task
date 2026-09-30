@@ -36,7 +36,7 @@ func setupTestDB(t *testing.T) {
 // mustRegister creates a due (past trigger) task.
 func mustRegister(t *testing.T, svc *TaskService, uid int64, taskType, payload, executorURL string, async bool, maxRetry int) string {
 	t.Helper()
-	taskID, err := svc.RegisterTask(uid, taskType, []byte(payload), executorURL, async, "", time.Now().UTC().Add(-time.Minute), maxRetry, 1)
+	taskID, err := svc.RegisterTask(RegisterOptions{UID: uid, TaskType: taskType, Payload: []byte(payload), ExecutorURL: executorURL, Async: async, TriggerTime: time.Now().UTC().Add(-time.Minute), MaxRetry: maxRetry, Weight: 1})
 	if err != nil {
 		t.Fatalf("RegisterTask: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestScheduler_CronExtend(t *testing.T) {
 	setBeijingLocal(t)
 	setupTestDB(t)
 	svc := NewTaskService()
-	taskID, err := svc.RegisterTask(1, "http", nil, "http://x", false, "0 23 * * *", time.Now().UTC(), 0, 1)
+	taskID, err := svc.RegisterTask(RegisterOptions{TaskType: "http", ExecutorURL: "http://x", CronExpr: "0 23 * * *", TriggerTime: time.Now().UTC()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -569,7 +569,7 @@ func TestFinalizeClaimFencing(t *testing.T) {
 func TestCronExtendAtomic(t *testing.T) {
 	setupTestDB(t)
 	svc := NewTaskService()
-	origID, err := svc.RegisterTask(1, "http", nil, "http://x", false, "0 23 * * *", time.Now().UTC(), 0, 1)
+	origID, err := svc.RegisterTask(RegisterOptions{UID: 1, TaskType: "http", ExecutorURL: "http://x", CronExpr: "0 23 * * *", TriggerTime: time.Now().UTC()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -641,10 +641,17 @@ func TestScheduler_DeadNodeTakeover(t *testing.T) {
 type stubClusterView struct {
 	dead      []string
 	maxWeight int
+	alive     int
 }
 
 func (s stubClusterView) DeadNodes() []string { return s.dead }
 func (s stubClusterView) MaxAliveWeight() int { return s.maxWeight }
+func (s stubClusterView) AliveCount() int {
+	if s.alive > 0 {
+		return s.alive
+	}
+	return 1
+}
 
 // ── 权重认领上限：低权重节点每 tick 只认领 base×weight/maxWeight ──────
 

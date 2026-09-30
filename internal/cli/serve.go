@@ -197,6 +197,7 @@ func runServer(defaultYAML []byte) error {
 		BatchSize:      cfg.Scheduler.BatchSize,
 		DispatchingTTL: time.Duration(cfg.Scheduler.DispatchingTimeoutSecond) * time.Second,
 		PerURLLimit:    cfg.Scheduler.PerURLLimit,
+		MaxShards:      cfg.Scheduler.MaxShards,
 		Owner:          instanceID,
 		Weight:         cfg.Scheduler.Weight,
 	})

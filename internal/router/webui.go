@@ -94,6 +94,13 @@ func (r *Router) registerWebuiRoutes(e *gin.Engine, cfg *config.Config, auth *we
 	channels.DELETE("/:name", r.apiDeleteChannel)
 	channels.POST("/:name/test", r.apiTestChannel)
 
+	// Business calendars (admin): CLI surface for holiday/adjustment dates.
+	calendarAPI := api.Group("/calendars", requireAdmin())
+	calendarAPI.GET("", r.apiListCalendars)
+	calendarAPI.POST("", r.apiCreateCalendar)
+	calendarAPI.POST("/dates", r.apiUpsertCalendarDate)
+	calendarAPI.DELETE("/:name", r.apiDeleteCalendar)
+
 	api.GET("/scripts", r.apiListScripts)
 	api.GET("/scripts/:script_id", r.apiScriptDetail)
 	api.POST("/scripts", r.apiCreateScript)
@@ -454,6 +461,7 @@ func (r *Router) apiCreateTask(c *gin.Context) {
 		Weight      int             `json:"weight"`
 		Shard       bool            `json:"shard"`
 		ShardTotal  int             `json:"shard_total"`
+		CalendarID  string          `json:"calendar_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request: " + err.Error()})
@@ -479,6 +487,7 @@ func (r *Router) apiCreateTask(c *gin.Context) {
 		UID: req.UID, TaskType: req.TaskType, Payload: req.Payload, ExecutorURL: req.ExecutorURL,
 		Async: req.Async, CronExpr: req.CronExpr, TriggerTime: triggerTime,
 		MaxRetry: req.MaxRetry, Weight: req.Weight, Shard: req.Shard, ShardTotal: req.ShardTotal,
+		CalendarID: req.CalendarID,
 	})
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "register failed: " + err.Error()})

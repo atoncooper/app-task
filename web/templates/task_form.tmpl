@@ -73,6 +73,16 @@
         </div>
       </div>
       <div class="form-group">
+        <label class="col-sm-2 control-label" for="calendar-id">业务日历</label>
+        <div class="col-sm-10">
+          <select name="calendar_id" id="calendar-id" class="form-control">
+            <option value="">不使用（按 cron 原义触发）</option>
+            {{range .Calendars}}<option value="{{.}}">{{.}}</option>{{end}}
+          </select>
+          <span class="help-block">仅对 cron 任务生效：休（off）日期跳过触发；调休补班（work）日期按周一参与星期匹配</span>
+        </div>
+      </div>
+      <div class="form-group">
         <label class="col-sm-2 control-label" for="max-retry">max_retry</label>
         <div class="col-sm-4">
           <input type="number" class="form-control" id="max-retry" name="max_retry" value="0" step="1" min="0">

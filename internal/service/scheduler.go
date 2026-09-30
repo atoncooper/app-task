@@ -557,7 +557,7 @@ func (s *Scheduler) extendCronTasks() {
 		return
 	}
 	for _, j := range toExtend {
-		next, err := NextCronTrigger(j.CronExpr, time.Now())
+		next, err := NextTriggerForTask(j.CronExpr, time.Now(), j.CalendarID)
 		if err != nil {
 			slog.Error("[SCHEDULER] cron parse failed", "task_id", j.TaskID, "cron_expr", j.CronExpr, "err", err)
 			continue

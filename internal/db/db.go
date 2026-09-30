@@ -130,6 +130,8 @@ func Migrate() error {
 		&model.WebUIUser{},
 		&model.ClusterNode{},
 		&model.NotifyChannel{},
+		&model.BizCalendar{},
+		&model.BizCalendarDate{},
 	); err != nil {
 		return fmt.Errorf("auto migrate: %w", err)
 	}

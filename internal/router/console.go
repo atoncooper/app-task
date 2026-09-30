@@ -40,7 +40,7 @@ func init() {
 		"dashboard", "tasks", "task_detail", "task_form", "logs", "cluster",
 		"scripts", "script_detail", "script_form", "script_run_form", "script_run_detail",
 		"emails", "users", "apikeys", "apikey_created", "password", "secrets",
-		"channels",
+		"channels", "bizcalendars",
 	}
 	pageTemplates = make(map[string]*template.Template, len(ssrPages)+2)
 	for _, p := range ssrPages {
@@ -528,18 +528,26 @@ func (r *Router) pageTaskNew(c *gin.Context) {
 		options = append(options, gin.H{"ScriptID": s.ScriptID, "Name": s.Name})
 	}
 
+	calendars, _ := repo.ListBizCalendars()
+	calNames := make([]string, 0, len(calendars))
+	for _, ca := range calendars {
+		calNames = append(calNames, ca.Name)
+	}
+
 	base := newBase(c, "tasks", "新建任务", "任务 = 调度定义（类型 + payload + 执行器 + cron/触发时间 + 重试）")
 	renderPage(c.Writer, "task_form", struct {
 		BaseData
 		TaskType, ScriptID, Payload, Owner string
 		Scripts                            []gin.H
+		Calendars                          []string
 	}{
-		BaseData: base,
-		TaskType: taskType,
-		ScriptID: scriptID,
-		Payload:  payload,
-		Owner:    base.User.Username,
-		Scripts:  options,
+		BaseData:  base,
+		TaskType:  taskType,
+		ScriptID:  scriptID,
+		Payload:   payload,
+		Owner:     base.User.Username,
+		Scripts:   options,
+		Calendars: calNames,
 	})
 }
 
@@ -568,6 +576,12 @@ func (r *Router) pageTaskDetail(c *gin.Context) {
 		{"下次重试", fmtTimePtr(task.NextRetryAt), false}, {"weight", strconv.Itoa(task.Weight), false},
 		{"创建时间", fmtTime(task.CreatedAt), false}, {"更新时间", fmtTime(task.UpdatedAt), false},
 		{"最近结果", trunc(fmtStrPtr(task.LastResult), 0), true},
+	}
+	if task.CalendarID != "" {
+		fields = append(fields, struct {
+			K, V string
+			Long bool
+		}{"业务日历", task.CalendarID, false})
 	}
 	if task.CronNextTaskID != "" {
 		fields = append(fields, struct {
@@ -713,6 +727,7 @@ func (r *Router) handleTaskCreate(c *gin.Context) {
 		MaxRetry: maxRetry, Weight: weight,
 		Shard:      c.PostForm("shard") == "on",
 		ShardTotal: shardTotal,
+		CalendarID: strings.TrimSpace(c.PostForm("calendar_id")),
 	})
 	if err != nil {
 		redirectFlash(c, "/console/tasks/new", "err", "创建失败：%v", err)
@@ -1302,6 +1317,14 @@ func (r *Router) registerPages(e *gin.Engine, auth *webuiAuthenticator) {
 	pages.POST("/channels/:name/toggle", r.handleChannelToggle)
 	pages.POST("/channels/:name/delete", r.handleChannelDelete)
 	pages.POST("/channels/:name/test", r.handleChannelTest)
+
+	// Business calendars (admin): holiday/adjustment overrides for cron
+	// materialization.
+	pages.GET("/calendars", r.pageCalendars)
+	pages.POST("/calendars", r.handleCalendarCreate)
+	pages.POST("/calendars/:name/delete", r.handleCalendarDelete)
+	pages.POST("/calendars/:name/dates", r.handleCalendarDateAdd)
+	pages.POST("/calendars/:name/dates/:date/delete", r.handleCalendarDateDelete)
 	pages.GET("/users", r.pageUsers)
 	pages.POST("/users", r.handleUserCreate)
 	pages.POST("/users/:user_id/password", r.handleUserPassword)

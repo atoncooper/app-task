@@ -291,6 +291,7 @@ func ExtendCronTask(src *model.Task, triggerTime time.Time) (string, bool, error
 			ExecutorURL: src.ExecutorURL,
 			Async:       src.Async,
 			CronExpr:    src.CronExpr,
+			CalendarID:  src.CalendarID,
 			Shard:       src.Shard,
 			ShardTotal:  0,
 			MaxRetry:    src.MaxRetry,

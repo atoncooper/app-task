@@ -119,3 +119,35 @@ at node join --name worker-3 --weight 4
 | `HTTP 403: admin role required` | 该操作需 admin（node join 等） |
 | `连接 ... 失败` | 服务未启动或 `--url` 不对 |
 | `HTTP 409: 节点已在集群中` | join 的 node_id 已 active（换 id 或先处理旧节点） |
+
+## 6. 通知渠道（notify）
+
+```bash
+at channel ls                                  # 渠道列表
+at channel add --name ops-ding --type dingtalk --config '{"webhook":"...","sign_secret":"SEC..."}'
+at channel test ops-ding                       # 发测试消息
+at channel rm ops-ding
+```
+
+type：`email`（`{"to":[...]}`）/ `dingtalk` / `feishu`（webhook + 可选加签）/
+`teams`（Workflows webhook）/ `webhook`（url + body 模板，企微/自建）。
+
+## 7. 业务日历
+
+```bash
+at calendar ls
+at calendar date --calendar cn-holidays --date 2026-10-01 --type off
+at calendar rm cn-holidays
+```
+
+`--type off` 跳过触发（节假日）；`work` 调休补班（按周一参与星期匹配）。
+建任务时 `at task create --calendar cn-holidays --cron "0 9 * * 1-5"` 引用。
+
+## 8. 分片广播任务
+
+```bash
+at task create --executor-url https://exec/batch --cron "0 2 * * *" --shard
+at task create --shard --shard-total 4 ...   # 固定 4 片（默认 = 存活节点数）
+```
+
+执行器从请求头 `X-Shard-Index` / `X-Shard-Total`（或 payload 注入）读片号。

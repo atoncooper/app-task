@@ -238,6 +238,9 @@ GRANT ALL ON app_task.* TO 'app_task'@'172.18.0.%';
 | `scheduler.per_url_limit` | 8 | 单 executor_url 并发闸 |
 | `scheduler.weight` | 1 | 本节点派发份额 |
 | `scheduler.instance_id` | hostname+rand | 节点身份（owner/名册共用） |
+| `scheduler.max_shards` | 32 | 分片广播扇出上限（存活节点数可被任务 shard_total 覆写） |
+| `notify.http_timeout_seconds` | 10 | notify 渠道出站超时 |
+| `notify.rate_limit_per_min` | 18 | notify 渠道限速（钉钉硬上限 20/min） |
 | `cluster.admission` | open | open \| pre_approved |
 | `rdbms.*` | 25/10 池等 | 见 §11 |
 | `redis.*` | 库默认 | 见 §11 |
@@ -245,3 +248,46 @@ GRANT ALL ON app_task.* TO 'app_task'@'172.18.0.%';
 | `webui.session_ttl_minutes` | 720 | 登录会话有效期 |
 | `lua.timeout_seconds` | 30 | 单脚本执行超时 |
 | `email.provider` | resend | 邮件通道 |
+
+## 15. 分片广播
+
+任务标记 `shard=true` 后，触发不再是单次执行，而是**按当时的存活节点数分裂成 N 个子任务**并行执行；每个子任务的 payload/HTTP 头携带 `shard_index`（0 起）/`shard_total`，执行器按片处理数据（如 `id % shard_total = shard_index`）。
+
+```
+触发行(pending) ──认领──► 持有者分裂（单事务：fenced 转 running + 插入 N 个子任务）
+                              │
+        子任务 N 个(pending，立即到期) ──► 各节点经正常认领分散执行（SKIP LOCKED 天然分片）
+                              │
+        子任务各自 finalize ──► 最后到达终态者独占收尾父任务（NOT EXISTS 未终态子片）
+```
+
+- **I7 分裂恰一次**：认领排他保证只有恰一个节点分裂；分裂是单事务（fenced 父转
+  running + 插全部子片），不存在半分裂态；`uk_shard(parent_task_id, shard_index)`
+  唯一索引兜底——NULL parent 的普通任务不受 MySQL 唯一约束影响。
+- **I8 父任务恰一次收尾**：条件更新让并发收尾恰有一个胜者；任一子片 failed →
+  父 failed，全部 completed → 父 completed。
+- 存活节点数 ≤1 退化为普通执行；与 async 执行器互斥（创建期拒绝）；running
+  超时清扫豁免 `shard=true` 行（父任务由子片门控，不由回调门控）。
+- 片数上限 `scheduler.max_shards`（默认 32），任务可用 `shard_total` 固定覆写。
+- 子片是普通任务：TTL 回收/死节点接管/重试/节点追溯（task_log.node）全部适用。
+
+## 16. 业务日历
+
+cron 表达不了"节假日不发、调休周末要发"。业务日历在 **cron 物化时**（计算下一次
+触发，含 `extendCronTasks` 与任务创建）逐日判定可触发性：
+
+| 标记 | 语义 |
+|------|------|
+| `off`（休） | 该日整日跳过触发（法定节假日） |
+| `work`（班） | 该日按**周一**参与星期匹配（调休补班周六让 `0 9 * * 1-5` 触发） |
+| 未标注 | 按 cron 原义 |
+
+- 生效规则一句话：**被标"班"的日期按周一参与星期匹配**。dom/month 始终以日期
+  本身计算；dom 与 dow 同时受限时沿用标准 cron 的 OR 语义（与 cronexpr 一致）。
+- 逐日推进上限 400 天，超窗报错（fail-loud，不会静默丢触发）。
+- 日历变更只影响未来的物化；已 pending 的触发行照发。删除日历后，引用它的
+  任务其 cron 物化会 fail-loud（日志可见），直到改指向——宁可停也不在错误
+  的日子静默开跑。
+- 一次性 trigger_time 任务不受日历影响（用户显式指定日期）。
+- 实现：`service/bizcalendar.go` 自含 5 段 cron 字段解析（dom/month/dow 集合 +
+  标准 OR 语义），物化侧一次日历加载 + 逐日匹配，无 N+1 查询。

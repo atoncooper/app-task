@@ -21,7 +21,7 @@ func (r *Router) register(c *gin.Context) {
 	}
 	var req struct {
 		UID         int64           `json:"uid" binding:"required"`
-		TaskType    string          `json:"task_type"`    // http (default) / lua
+		TaskType    string          `json:"task_type"`    // http (default) / lua / notify
 		Payload     json.RawMessage `json:"payload"`      // opaque task parameters
 		ExecutorURL string          `json:"executor_url"` // http mode: third-party executor endpoint
 		Async       bool            `json:"async"`        // true: executor replies 202 + callback

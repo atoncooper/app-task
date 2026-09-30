@@ -18,6 +18,7 @@
           <select name="task_type" id="task-type" class="form-control">
             <option value="http" {{if eq .TaskType "http"}}selected{{end}}>http</option>
             <option value="lua" {{if eq .TaskType "lua"}}selected{{end}}>lua</option>
+            <option value="notify" {{if eq .TaskType "notify"}}selected{{end}}>notify</option>
           </select>
         </div>
         <div class="col-sm-6">
@@ -36,6 +37,13 @@
             {{end}}
           </select>
           <span class="help-block">到点时由 Lua 执行器运行其 handle(ctx)，选中后自动写入 payload.script_id</span>
+        </div>
+      </div>
+      <div class="form-group" id="notify-hint" style="display:none">
+        <div class="col-sm-offset-2 col-sm-10">
+          <span class="help-block">notify：到点渲染 payload 并投递（本期渠道 = email）。payload 示例：
+            <code>{"to":["a@x.com"],"subject":"日报 {{ "{{.date}}" }}","html":"&lt;p&gt;内容 {{ "{{.task_id}}" }}&lt;/p&gt;","vars":{"env":"prod"}}</code>
+            —— 循环通知配 cron（每天 <code>0 9 * * *</code>，每年固定日期 <code>0 9 15 3 *</code>）</span>
         </div>
       </div>
       <div class="form-group">
@@ -92,8 +100,10 @@
   function syncType() {
     var isLua = typeSel.value === 'lua';
     scriptField.style.display = isLua ? 'block' : 'none';
+    var isNotify = typeSel.value === 'notify';
+    document.getElementById('notify-hint').style.display = isNotify ? 'block' : 'none';
     var exec = form.querySelector('[name=executor_url]');
-    exec.closest('.form-group').style.opacity = isLua ? 0.5 : 1;
+    exec.closest('.form-group').style.opacity = (isLua || isNotify) ? 0.5 : 1;
   }
   typeSel.addEventListener('change', syncType);
   syncType();

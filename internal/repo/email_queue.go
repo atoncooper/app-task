@@ -11,6 +11,30 @@ import (
 	"gorm.io/gorm"
 )
 
+// Email queue statuses (the claim lifecycle: pending -> sending -> sent |
+// failed | dry_run; stale sending claims are reclaimed back to pending).
+const (
+	StatusEmailPending = "pending"
+	StatusEmailSending = "sending"
+	StatusEmailSent    = "sent"
+	StatusEmailFailed  = "failed"
+	StatusEmailDryRun  = "dry_run"
+)
+
+// EmailReferenceActive reports whether an email with this reference_id is
+// in-flight or already delivered (pending/sending/sent). Used by the notify
+// executor's at-least-once guard: a reclaimed notify task must not enqueue a
+// duplicate notification, but a FAILED email must not block the task-level
+// retry from trying again — hence failed/dry_run rows do not count as active.
+func EmailReferenceActive(referenceID string) (bool, error) {
+	var n int64
+	err := db.DB.Model(&model.EmailMessage{}).
+		Where("reference_id = ? AND status IN ?", referenceID,
+			[]string{StatusEmailPending, StatusEmailSending, StatusEmailSent}).
+		Count(&n).Error
+	return n > 0, err
+}
+
 func CreateEmail(m *model.EmailMessage) error {
 	return db.DB.Create(m).Error
 }
@@ -27,7 +51,7 @@ const StatusSending = "sending"
 func ClaimEmail(emailID string, now time.Time) (string, bool, error) {
 	token := uuid.NewString()
 	res := db.DB.Model(&model.EmailMessage{}).
-		Where("email_id = ? AND status = ?", emailID, "pending").
+		Where("email_id = ? AND status = ?", emailID, StatusEmailPending).
 		Updates(map[string]any{
 			"status":      StatusSending,
 			"claim_token": token,
@@ -41,7 +65,7 @@ func ClaimEmail(emailID string, now time.Time) (string, bool, error) {
 func ReclaimStaleSending(olderThan time.Time) (int64, error) {
 	res := db.DB.Model(&model.EmailMessage{}).
 		Where("status = ? AND updated_at < ?", StatusSending, olderThan).
-		Updates(map[string]any{"status": "pending", "updated_at": time.Now().UTC()})
+		Updates(map[string]any{"status": StatusEmailPending, "updated_at": time.Now().UTC()})
 	return res.RowsAffected, res.Error
 }
 
@@ -50,7 +74,7 @@ func ListDueEmails(limit int) ([]model.EmailMessage, error) {
 	var out []model.EmailMessage
 	err := db.DB.Where(
 		"status = ? AND (next_retry_at IS NULL OR next_retry_at <= ?)",
-		"pending", time.Now().UTC(),
+		StatusEmailPending, time.Now().UTC(),
 	).Order("created_at ASC").Limit(limit).Find(&out).Error
 	return out, err
 }
@@ -58,7 +82,7 @@ func ListDueEmails(limit int) ([]model.EmailMessage, error) {
 func MarkEmailSent(emailID, claimToken string) error {
 	return db.DB.Model(&model.EmailMessage{}).
 		Where("email_id = ? AND status = ? AND claim_token = ?", emailID, StatusSending, claimToken).
-		Updates(map[string]any{"status": "sent", "sent_at": time.Now().UTC()}).Error
+		Updates(map[string]any{"status": StatusEmailSent, "sent_at": time.Now().UTC()}).Error
 }
 
 // MarkEmailDryRun marks an email as dry_run (no API key configured); distinct
@@ -66,15 +90,15 @@ func MarkEmailSent(emailID, claimToken string) error {
 func MarkEmailDryRun(emailID, claimToken, reason string) error {
 	return db.DB.Model(&model.EmailMessage{}).
 		Where("email_id = ? AND status = ? AND claim_token = ?", emailID, StatusSending, claimToken).
-		Updates(map[string]any{"status": "dry_run", "last_error": reason}).Error
+		Updates(map[string]any{"status": StatusEmailDryRun, "last_error": reason}).Error
 }
 
 // MarkEmailFailed bumps retry_count; if final, status=failed, else pending with
 // nextRetryAt as the exact retry time.
 func MarkEmailFailed(emailID, claimToken, errMsg string, retryCount int, nextRetryAt *time.Time, final bool) error {
-	status := "pending"
+	status := StatusEmailPending
 	if final {
-		status = "failed"
+		status = StatusEmailFailed
 	}
 	values := map[string]any{
 		"retry_count": retryCount,
@@ -148,9 +172,9 @@ func GetEmailByID(emailID string) (*model.EmailMessage, error) {
 // failed -> pending; returns false when the email is not in failed state.
 func ResetEmailForRetry(emailID string) (bool, error) {
 	tx := db.DB.Model(&model.EmailMessage{}).
-		Where("email_id = ? AND status = ?", emailID, "failed").
+		Where("email_id = ? AND status = ?", emailID, StatusEmailFailed).
 		Updates(map[string]any{
-			"status":        "pending",
+			"status":        StatusEmailPending,
 			"retry_count":   0,
 			"next_retry_at": nil,
 			"last_error":    nil,

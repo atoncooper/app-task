@@ -63,6 +63,16 @@
         </div>
       </div>
       <div class="form-group">
+        <label class="col-sm-2 control-label">分片广播</label>
+        <div class="col-sm-4" style="margin-top:8px">
+          <label class="checkbox-inline"><input type="checkbox" name="shard"> 启用（按存活节点数切片）</label>
+        </div>
+        <label class="col-sm-2 control-label" for="shard-total">shard_total</label>
+        <div class="col-sm-4">
+          <input type="number" class="form-control" id="shard-total" name="shard_total" value="0" min="0" max="1000" title="固定片数；0 = 自动（存活节点数）">
+        </div>
+      </div>
+      <div class="form-group">
         <label class="col-sm-2 control-label" for="max-retry">max_retry</label>
         <div class="col-sm-4">
           <input type="number" class="form-control" id="max-retry" name="max_retry" value="0" step="1" min="0">

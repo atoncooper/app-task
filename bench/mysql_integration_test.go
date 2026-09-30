@@ -32,6 +32,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -411,5 +412,64 @@ func TestMySQLAtLeastOnceRedelivery(t *testing.T) {
 	db.DB.Model(&model.TaskLog{}).Where("task_id = ? AND status = ?", "mysql-task-0", "success").Count(&logs)
 	if logs != 1 {
 		t.Fatalf("success task_log rows = %d, want 1 (orphaned attempt must not write)", logs)
+	}
+}
+
+// TestMySQLShardBroadcast exercises the broadcast split + parent finalization
+// on real MySQL: the uk_shard unique index, fenced re-split rejection, and
+// concurrent parent closing under InnoDB row locks.
+func TestMySQLShardBroadcast(t *testing.T) {
+	setupMySQLDB(t)
+	seedMySQLDueTasks(t, 1, "http://mysql-itest-gate")
+	id := "mysql-task-0"
+	if _, ok, err := repo.ClaimTask(id, "node-a", time.Now().UTC()); err != nil || !ok {
+		t.Fatalf("claim = %v %v", ok, err)
+	}
+	parent, _ := repo.GetTaskByID(id)
+	if ok, err := repo.SplitShardBroadcast(parent, 3, time.Now().UTC()); err != nil || !ok {
+		t.Fatalf("split = %v %v", ok, err)
+	}
+	if ok, err := repo.SplitShardBroadcast(parent, 3, time.Now().UTC()); err != nil || ok {
+		t.Fatalf("re-split = %v %v, want false nil", ok, err)
+	}
+	var n int64
+	db.DB.Model(&model.Task{}).Where("parent_task_id = ?", id).Count(&n)
+	if n != 3 {
+		t.Fatalf("children = %d, want 3", n)
+	}
+	// unique index: inserting a duplicate (parent, index) must be rejected
+	dup := model.Task{TaskID: "duplicate-child", UID: parent.UID, TaskType: "http",
+		TriggerTime: time.Now().UTC(), Status: "pending", ShardTotal: 3, ShardIndex: 0, ParentTaskID: &id}
+	if err := db.DB.Create(&dup).Error; err == nil {
+		t.Fatal("duplicate (parent, shard_index) accepted — uk_shard missing")
+	}
+	// finalize children (dispatching → completed) then race the parent close
+	children, _ := repo.ListShardChildren(id)
+	for i := range children {
+		if err := db.DB.Model(&model.Task{}).
+			Where("task_id = ?", children[i].TaskID).
+			Update("status", "completed").Error; err != nil {
+			t.Fatalf("child update: %v", err)
+		}
+	}
+	var wins int64
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ok, _, err := repo.TryFinalizeShardParent(id)
+			if err == nil && ok {
+				atomic.AddInt64(&wins, 1)
+			}
+		}()
+	}
+	wg.Wait()
+	if wins != 1 {
+		t.Fatalf("winning finalizers = %d, want exactly 1", wins)
+	}
+	parent, _ = repo.GetTaskByID(id)
+	if parent.Status != "completed" || parent.ShardTotal != 3 {
+		t.Fatalf("parent = %s/%d, want completed/3", parent.Status, parent.ShardTotal)
 	}
 }

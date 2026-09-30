@@ -104,6 +104,10 @@ type SchedulerConfig struct {
 	// runs other duties (a "manager") weight 1 and its workers 4, and the
 	// manager ends up with a quarter of a worker's claim capacity.
 	Weight int `yaml:"weight"`
+	// MaxShards caps the shard-broadcast fan-out (default 32): a broadcast
+	// trigger splits into at most this many child tasks regardless of the
+	// alive-node count.
+	MaxShards int `yaml:"max_shards"`
 }
 
 // ClusterConfig tunes cluster membership admission.

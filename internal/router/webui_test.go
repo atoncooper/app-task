@@ -287,11 +287,11 @@ func TestWebUIStats(t *testing.T) {
 	svc := service.NewTaskService()
 
 	// 1 completed + 1 pending task
-	taskID, err := svc.RegisterTask(1, "http", []byte(`{"k":"v"}`), "http://exec", false, "", time.Now().UTC().Add(time.Minute), 0, 1)
+	taskID, err := svc.RegisterTask(service.RegisterOptions{UID: 1, TaskType: "http", Payload: []byte(`{"k":"v"}`), ExecutorURL: "http://exec", TriggerTime: time.Now().UTC().Add(time.Minute)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.RegisterTask(2, "http", []byte(`{}`), "http://exec2", false, "", time.Now().UTC().Add(time.Minute), 0, 1); err != nil {
+	if _, err := svc.RegisterTask(service.RegisterOptions{UID: 2, TaskType: "http", Payload: []byte(`{}`), ExecutorURL: "http://exec2", TriggerTime: time.Now().UTC().Add(time.Minute)}); err != nil {
 		t.Fatal(err)
 	}
 	_, _ = repo.ConditionalUpdate(taskID, "pending", "completed", map[string]any{"last_result": "ok"})
@@ -341,10 +341,10 @@ func TestWebUITasksAdminView(t *testing.T) {
 	h := newWebUITestRouter(t, "")
 	ah := adminHeaders(t, h)
 	svc := service.NewTaskService()
-	if _, err := svc.RegisterTask(1, "http", []byte(`{"a":1}`), "http://e1", false, "", time.Now().UTC().Add(time.Minute), 0, 1); err != nil {
+	if _, err := svc.RegisterTask(service.RegisterOptions{UID: 1, TaskType: "http", Payload: []byte(`{"a":1}`), ExecutorURL: "http://e1", TriggerTime: time.Now().UTC().Add(time.Minute)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.RegisterTask(2, "lua", []byte(`{"script_id":"s"}`), "", false, "", time.Now().UTC().Add(time.Minute), 2, 3); err != nil {
+	if _, err := svc.RegisterTask(service.RegisterOptions{UID: 2, TaskType: "lua", Payload: []byte(`{"script_id":"s"}`), TriggerTime: time.Now().UTC().Add(time.Minute), MaxRetry: 2, Weight: 3}); err != nil {
 		t.Fatal(err)
 	}
 

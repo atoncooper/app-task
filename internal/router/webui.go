@@ -19,6 +19,7 @@ import (
 	"app-task/internal/config"
 	"app-task/internal/model"
 	"app-task/internal/repo"
+	"app-task/internal/service"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -451,6 +452,8 @@ func (r *Router) apiCreateTask(c *gin.Context) {
 		TriggerTime string          `json:"trigger_time"`
 		MaxRetry    int             `json:"max_retry"`
 		Weight      int             `json:"weight"`
+		Shard       bool            `json:"shard"`
+		ShardTotal  int             `json:"shard_total"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request: " + err.Error()})
@@ -472,7 +475,11 @@ func (r *Router) apiCreateTask(c *gin.Context) {
 		}
 		triggerTime = t
 	}
-	taskID, err := r.taskSvc.RegisterTask(req.UID, req.TaskType, req.Payload, req.ExecutorURL, req.Async, req.CronExpr, triggerTime, req.MaxRetry, req.Weight)
+	taskID, err := r.taskSvc.RegisterTask(service.RegisterOptions{
+		UID: req.UID, TaskType: req.TaskType, Payload: req.Payload, ExecutorURL: req.ExecutorURL,
+		Async: req.Async, CronExpr: req.CronExpr, TriggerTime: triggerTime,
+		MaxRetry: req.MaxRetry, Weight: req.Weight, Shard: req.Shard, ShardTotal: req.ShardTotal,
+	})
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "register failed: " + err.Error()})
 		return

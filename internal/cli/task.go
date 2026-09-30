@@ -136,6 +136,8 @@ func newTaskCreateCmd() *cobra.Command {
 		payload     string
 		scriptID    string
 		async       bool
+		shard       bool
+		shardTotal  int
 		maxRetry    int
 		weight      int
 		uid         int64
@@ -194,6 +196,8 @@ func newTaskCreateCmd() *cobra.Command {
 				"trigger_time": triggerOut,
 				"max_retry":    maxRetry,
 				"weight":       weight,
+				"shard":        shard,
+				"shard_total":  shardTotal,
 			}
 			if len(payloadOut) > 0 {
 				body["payload"] = payloadOut
@@ -223,6 +227,8 @@ func newTaskCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&payload, "payload", "", "JSON 透传给执行器：内联 JSON、@file.json 或 -（stdin）")
 	cmd.Flags().StringVar(&scriptID, "script-id", "", "lua 任务：自动写入 payload.script_id")
 	cmd.Flags().BoolVar(&async, "async", false, "异步（执行器 202 + 回调）")
+	cmd.Flags().BoolVar(&shard, "shard", false, "分片广播：按存活节点数切片并行执行（payload 注入 shard_index/shard_total）")
+	cmd.Flags().IntVar(&shardTotal, "shard-total", 0, "固定片数（0 = 自动）")
 	cmd.Flags().IntVar(&maxRetry, "max-retry", 0, "失败重试次数")
 	cmd.Flags().IntVar(&weight, "weight", 1, "WFQ 权重（预留）")
 	cmd.Flags().Int64Var(&uid, "uid", 0, "显式属主 uid（默认自动 = 当前凭据）")

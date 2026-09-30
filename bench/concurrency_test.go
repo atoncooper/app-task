@@ -13,6 +13,8 @@ package bench
 //	I5 cron atomicity      — concurrent extensions yield one next occurrence
 //	I6 dead-node takeover  — stale-node claims are recovered while live
 //	                         claims are untouched
+//	I7 shard split once    — broadcast split is fenced; no duplicate children
+//	I8 parent finalize once — exactly one closer completes a broadcast parent
 //
 // All tests run against in-memory SQLite: goroutine-level interleaving is
 // exercised, but InnoDB row-lock semantics are NOT — the MySQL-specific path
@@ -300,5 +302,91 @@ func TestDeadNodeFastTakeover(t *testing.T) {
 	db.DB.Model(&model.Task{}).Where("status = ?", "pending").Count(&pending)
 	if pending != 10 {
 		t.Fatalf("pending after takeover = %d, want 10", pending)
+	}
+}
+
+// TestShardSplitExactlyOnce proves I7: the broadcast split is fenced by the
+// live claim (a second split attempt with the superseded state is a no-op)
+// and the (parent_task_id, shard_index) unique index backstops duplicates.
+func TestShardSplitExactlyOnce(t *testing.T) {
+	setupDB(t)
+	seedDueTasks(t, 1)
+	id := "bench-task-0"
+	if _, ok, err := repo.ClaimTask(id, "node-a", time.Now().UTC()); err != nil || !ok {
+		t.Fatalf("claim = %v %v", ok, err)
+	}
+	parent, _ := repo.GetTaskByID(id)
+	ok1, err := repo.SplitShardBroadcast(parent, 4, time.Now().UTC())
+	if err != nil || !ok1 {
+		t.Fatalf("first split = %v %v", ok1, err)
+	}
+	// second split: the parent is already running — the fenced transition
+	// matches zero rows, so no duplicate children may appear
+	ok2, err := repo.SplitShardBroadcast(parent, 4, time.Now().UTC())
+	if err != nil || ok2 {
+		t.Fatalf("second split = %v %v, want false nil", ok2, err)
+	}
+	var n int64
+	db.DB.Model(&model.Task{}).Where("parent_task_id = ?", id).Count(&n)
+	if n != 4 {
+		t.Fatalf("children = %d, want 4 (duplicate split!)", n)
+	}
+	updated, _ := repo.GetTaskByID(id)
+	if updated.Status != "running" || updated.ShardTotal != 4 {
+		t.Fatalf("parent = %s/%d", updated.Status, updated.ShardTotal)
+	}
+}
+
+// TestShardParentFinalizeOnce proves I8: concurrent finalizers race to close
+// the broadcast parent — exactly one wins, and any failed child fails the
+// parent.
+func TestShardParentFinalizeOnce(t *testing.T) {
+	setupDB(t)
+	parentID := "shard-parent"
+	db.DB.Create(&model.Task{TaskID: parentID, UID: 1, TaskType: "http",
+		Status: "running", Shard: true, ShardTotal: 4})
+	for i := 0; i < 4; i++ {
+		pid := parentID
+		db.DB.Create(&model.Task{TaskID: fmt.Sprintf("shard-child-%d", i), UID: 1, TaskType: "http",
+			Status: "dispatching", ShardTotal: 4, ShardIndex: i, ParentTaskID: &pid})
+	}
+	// 3 children complete; the 4th is still dispatching → parent must wait
+	for i := 0; i < 3; i++ {
+		db.DB.Model(&model.Task{}).Where("task_id = ?", fmt.Sprintf("shard-child-%d", i)).
+			Update("status", "completed")
+	}
+	finalized, status, err := repo.TryFinalizeShardParent(parentID)
+	if err != nil || finalized || status != "" {
+		t.Fatalf("early finalize = %v %s %v, want false \"\" nil", finalized, status, err)
+	}
+	// last child terminal → 8 concurrent closers race, exactly one wins
+	db.DB.Model(&model.Task{}).Where("task_id = ?", "shard-child-3").Update("status", "completed")
+	var wins int64
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ok, _, err := repo.TryFinalizeShardParent(parentID)
+			if err == nil && ok {
+				atomic.AddInt64(&wins, 1)
+			}
+		}()
+	}
+	wg.Wait()
+	if wins != 1 {
+		t.Fatalf("winning finalizers = %d, want exactly 1", wins)
+	}
+	parent, _ := repo.GetTaskByID(parentID)
+	if parent.Status != "completed" {
+		t.Fatalf("parent = %s, want completed", parent.Status)
+	}
+
+	// failed child → parent failed
+	db.DB.Model(&model.Task{}).Where("task_id = ?", "shard-child-2").Update("status", "failed")
+	db.DB.Model(&model.Task{}).Where("task_id = ?", parentID).Update("status", "running")
+	_, status, err = repo.TryFinalizeShardParent(parentID)
+	if err != nil || status != "failed" {
+		t.Fatalf("failed child must fail the parent: %s %v", status, err)
 	}
 }

@@ -50,6 +50,7 @@ type Scheduler struct {
 	batchSize      int
 	dispatchingTTL time.Duration
 	perURLLimit    int
+	maxShards      int
 	owner          string
 
 	slots    chan struct{}  // global dispatch concurrency bound (cap = workers)
@@ -74,6 +75,7 @@ type Scheduler struct {
 type ClusterView interface {
 	DeadNodes() []string
 	MaxAliveWeight() int
+	AliveCount() int
 }
 
 // SetClusterView attaches the cluster roster provider.
@@ -89,6 +91,7 @@ type SchedulerOptions struct {
 	PerURLLimit    int           // max concurrent dispatches per executor_url (0 = unlimited)
 	Owner          string        // instance identity for claims (default hostname+rand)
 	Weight         int           // dispatch share relative to the max alive weight (default 1)
+	MaxShards      int           // shard-broadcast fan-out cap (default 32)
 }
 
 // Defaults for zero-valued SchedulerOptions fields.
@@ -123,6 +126,9 @@ func NewScheduler(reg *executor.Registry, opts SchedulerOptions) *Scheduler {
 	if opts.Weight > 10000 { // overflow guard for the weighted-claim arithmetic
 		opts.Weight = 10000
 	}
+	if opts.MaxShards <= 0 {
+		opts.MaxShards = 32
+	}
 	return &Scheduler{
 		registry:       reg,
 		stopCh:         make(chan struct{}),
@@ -132,6 +138,7 @@ func NewScheduler(reg *executor.Registry, opts SchedulerOptions) *Scheduler {
 		batchSize:      opts.BatchSize,
 		dispatchingTTL: opts.DispatchingTTL,
 		perURLLimit:    opts.PerURLLimit,
+		maxShards:      opts.MaxShards,
 		owner:          opts.Owner,
 		weight:         opts.Weight,
 		slots:          make(chan struct{}, opts.Workers),
@@ -287,6 +294,27 @@ func (s *Scheduler) tick() {
 // for the next tick instead of hoarding), claim it (pending → dispatching,
 // mutually exclusive across workers/instances), execute, finalize.
 func (s *Scheduler) dispatch(task *model.Task) {
+	// 分片广播触发行：分裂后由子任务执行，本行转为 running 等全部子片终态。
+	// 存活节点数 <=1 或分裂失败（认领丢失）时不执行——认领丢失意味着该行
+	// 已被回收重派，由新的持有者重新分裂。
+	if task.Shard && task.ParentTaskID == nil {
+		n := s.shardCount(task)
+		if n > 1 {
+			ok, err := repo.SplitShardBroadcast(task, n, time.Now().UTC())
+			if err != nil {
+				s.markFailedOrRetry(task, fmt.Errorf("shard split: %w", err), time.Now())
+				return
+			}
+			if !ok {
+				s.logOrphan(task, "broadcast split (claim superseded)")
+				return
+			}
+			s.writeLog(task, "accepted", 0, fmt.Sprintf("broadcast: %d shards", n), "")
+			slog.Info("[SCHEDULER] shard broadcast split", "task_id", task.TaskID, "shards", n)
+			return
+		}
+		// n <= 1：退化为普通执行（本行已是普通任务语义）
+	}
 	// Fencing: every transition below is guarded by this claim token, so a
 	// stale holder (stalled past the dispatching TTL, claim reclaimed and
 	// re-dispatched by another instance) can never clobber the newer claim —
@@ -329,6 +357,7 @@ func (s *Scheduler) dispatch(task *model.Task) {
 		// Sync success -> completed.
 		if ok, _ := repo.FinalizeClaim(task.TaskID, token, "completed", map[string]any{"last_result": "ok"}); ok {
 			s.writeLog(task, "success", time.Since(start).Milliseconds(), "ok", "")
+			s.maybeFinalizeShardParent(task)
 		} else {
 			s.logOrphan(task, "success")
 		}
@@ -381,6 +410,56 @@ func (s *Scheduler) tryAcquireURL(task *model.Task) (release func(), ok bool) {
 	default:
 		return func() {}, false
 	}
+}
+
+// shardCount computes the shard fan-out for a broadcast trigger: the task's
+// fixed override when set, otherwise the live roster's alive-node count —
+// clamped to [1, maxShards]. With no cluster view (single-instance dev) the
+// count is 1 and the task executes inline.
+func (s *Scheduler) shardCount(task *model.Task) int {
+	n := 1
+	if s.cluster != nil {
+		n = s.cluster.AliveCount()
+	}
+	if task.ShardTotal > 0 {
+		n = task.ShardTotal
+	}
+	if n > s.maxShards {
+		n = s.maxShards
+	}
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+// maybeFinalizeShardParent hooks the broadcast parent completion: a shard
+// child that just reached a terminal state may be the last one — the repo's
+// conditional update lets exactly one finalizer close the parent.
+func (s *Scheduler) maybeFinalizeShardParent(task *model.Task) {
+	if task.ParentTaskID == nil {
+		return
+	}
+	finalized, status, err := repo.TryFinalizeShardParent(*task.ParentTaskID)
+	if err != nil {
+		slog.Error("[SCHEDULER] shard parent finalize failed", "parent", *task.ParentTaskID, "err", err)
+		return
+	}
+	if !finalized {
+		return
+	}
+	logStatus := "success"
+	if status == "failed" {
+		logStatus = "failed"
+	}
+	_ = repo.CreateTaskLog(&model.TaskLog{
+		LogID:    uuid.NewString(),
+		TaskID:   *task.ParentTaskID,
+		Executor: "broadcast",
+		Status:   logStatus,
+		Node:     s.owner,
+	})
+	slog.Info("[SCHEDULER] shard broadcast parent finalized", "task_id", *task.ParentTaskID, "status", status)
 }
 
 // markFailedOrRetry applies the task's retry policy to a failed dispatch:
@@ -462,6 +541,8 @@ func taskFromTask(j *model.Task) executor.Task {
 			"async":        j.Async,
 			"retry_count":  j.RetryCount,
 			"owner":        j.Owner, // dispatching node identity (visible to executors for audit)
+			"shard_index":  j.ShardIndex,
+			"shard_total":  j.ShardTotal,
 		},
 	}
 }

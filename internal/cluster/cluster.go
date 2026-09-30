@@ -188,6 +188,27 @@ func (m *Manager) beat() error {
 	})
 }
 
+// AliveCount returns how many roster nodes are currently alive (fresh
+// heartbeat), minimum 1 (this instance). Used by the scheduler's shard
+// broadcast to size the fan-out; roster query failure degrades to 1 so a
+// metadata hiccup downgrades execution instead of blocking it.
+func (m *Manager) AliveCount() int {
+	nodes, err := m.Nodes(time.Now())
+	if err != nil {
+		return 1
+	}
+	n := 0
+	for i := range nodes {
+		if nodes[i].Alive {
+			n++
+		}
+	}
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
 // MaxAliveWeight returns the highest dispatch weight among alive roster
 // nodes (0 when the roster is empty/unavailable). The scheduler scales its
 // claim limit by ownWeight / maxAliveWeight.

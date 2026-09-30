@@ -37,16 +37,23 @@ type Task struct {
 	// (fresh per claim): finalizes/releases only apply while their token is
 	// still the live claim, so a stale holder (reclaimed after a >TTL stall)
 	// cannot clobber the newer claim. Cleared on finalize/reclaim.
-	Owner       string     `gorm:"column:owner;size:64" json:"owner,omitempty"`
-	ClaimedAt   *time.Time `gorm:"column:claimed_at" json:"claimed_at,omitempty"`
-	ClaimToken  string     `gorm:"column:claim_token;size:36" json:"claim_token,omitempty"`
-	MaxRetry    int        `gorm:"column:max_retry;default:0;not null" json:"max_retry"` // 0 = no retry
-	RetryCount  int        `gorm:"column:retry_count;default:0;not null" json:"retry_count"`
-	NextRetryAt *time.Time `gorm:"column:next_retry_at;index:ix_task_status_next_retry,priority:2" json:"next_retry_at,omitempty"`
-	Weight      int        `gorm:"column:weight;default:1;not null" json:"weight"`            // WFQ weight (reserved, M4)
-	LastResult  *string    `gorm:"column:last_result;type:text" json:"last_result,omitempty"` // short outcome summary from the last execution
-	CreatedAt   time.Time  `gorm:"column:created_at;autoCreateTime" json:"created_at"`
-	UpdatedAt   time.Time  `gorm:"column:updated_at;autoUpdateTime" json:"updated_at"`
+	Owner      string     `gorm:"column:owner;size:64" json:"owner,omitempty"`
+	ClaimedAt  *time.Time `gorm:"column:claimed_at" json:"claimed_at,omitempty"`
+	ClaimToken string     `gorm:"column:claim_token;size:36" json:"claim_token,omitempty"`
+	// 分片广播: shard=true 每次触发按存活节点数分裂成 N 个子任务并行执行;
+	// 子任务携带 parent_task_id + shard_index, 父任务在全部子片终态后收尾。
+	// 普通任务 parent_task_id 为 NULL（唯一索引 uk_shard 因此不影响它们）。
+	Shard        bool       `gorm:"column:shard;not null" json:"shard"`
+	ShardTotal   int        `gorm:"column:shard_total;not null;default:0" json:"shard_total"` // 父: 实际片数(0=未分裂); 子: 总片数
+	ShardIndex   int        `gorm:"column:shard_index;not null;default:0;index:uk_shard,unique" json:"shard_index"`
+	ParentTaskID *string    `gorm:"column:parent_task_id;size:64;index;index:uk_shard,unique" json:"parent_task_id,omitempty"`
+	MaxRetry     int        `gorm:"column:max_retry;default:0;not null" json:"max_retry"` // 0 = no retry
+	RetryCount   int        `gorm:"column:retry_count;default:0;not null" json:"retry_count"`
+	NextRetryAt  *time.Time `gorm:"column:next_retry_at;index:ix_task_status_next_retry,priority:2" json:"next_retry_at,omitempty"`
+	Weight       int        `gorm:"column:weight;default:1;not null" json:"weight"`            // WFQ weight (reserved, M4)
+	LastResult   *string    `gorm:"column:last_result;type:text" json:"last_result,omitempty"` // short outcome summary from the last execution
+	CreatedAt    time.Time  `gorm:"column:created_at;autoCreateTime" json:"created_at"`
+	UpdatedAt    time.Time  `gorm:"column:updated_at;autoUpdateTime" json:"updated_at"`
 }
 
 func (Task) TableName() string { return "task" }

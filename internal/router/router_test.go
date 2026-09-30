@@ -161,7 +161,7 @@ func TestTasksDetailAndList(t *testing.T) {
 
 func TestTasksCompleteCallback(t *testing.T) {
 	svc, h := newTestRouter(t)
-	taskID, err := svc.RegisterTask(1, "http", []byte(`{}`), "http://exec", true, "", time.Now().UTC().Add(time.Minute), 0, 1)
+	taskID, err := svc.RegisterTask(service.RegisterOptions{UID: 1, TaskType: "http", Payload: []byte(`{}`), ExecutorURL: "http://exec", Async: true, TriggerTime: time.Now().UTC().Add(time.Minute)})
 	if err != nil {
 		t.Fatal(err)
 	}

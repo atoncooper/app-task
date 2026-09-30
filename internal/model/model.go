@@ -233,3 +233,23 @@ type ClusterNode struct {
 }
 
 func (ClusterNode) TableName() string { return "cluster_node" }
+
+// NotifyChannel is a reusable notification delivery channel (notify tasks
+// reference it by name via payload "channel"). Config (webhook URL, signing
+// secret, email recipients) is AES-256-GCM encrypted at rest with the same
+// key as the secret store (SECURITY__API_KEY_ENCRYPTION_KEY); it is write-only
+// from the console and decrypted only inside a running task.
+type NotifyChannel struct {
+	ID        int64     `gorm:"primaryKey;autoIncrement" json:"-"`
+	ChannelID string    `gorm:"column:channel_id;uniqueIndex;size:36" json:"channel_id"`
+	Name      string    `gorm:"column:name;uniqueIndex;size:64;not null" json:"name"`
+	Type      string    `gorm:"column:type;size:16;not null" json:"type"` // email | dingtalk | feishu | webhook (constant, never a literal)
+	ConfigEnc string    `gorm:"column:config_enc;type:text;not null" json:"-"`
+	Enabled   bool      `gorm:"column:enabled;default:true;not null" json:"enabled"`
+	CreatedBy string    `gorm:"column:created_by;size:64" json:"created_by"`
+	UpdatedBy string    `gorm:"column:updated_by;size:64" json:"updated_by"`
+	CreatedAt time.Time `gorm:"column:created_at;autoCreateTime" json:"created_at"`
+	UpdatedAt time.Time `gorm:"column:updated_at;autoUpdateTime" json:"updated_at"`
+}
+
+func (NotifyChannel) TableName() string { return "notify_channel" }

@@ -39,6 +39,7 @@ func init() {
 		"dashboard", "tasks", "task_detail", "task_form", "logs", "cluster",
 		"scripts", "script_detail", "script_form", "script_run_form", "script_run_detail",
 		"emails", "users", "apikeys", "apikey_created", "password", "secrets",
+		"channels",
 	}
 	pageTemplates = make(map[string]*template.Template, len(ssrPages)+2)
 	for _, p := range ssrPages {
@@ -1263,6 +1264,13 @@ func (r *Router) registerPages(e *gin.Engine, auth *webuiAuthenticator) {
 	pages.POST("/cluster/join", r.handleClusterJoin)
 	pages.GET("/emails", r.pageEmails)
 	pages.POST("/emails/:email_id/retry", r.handleEmailRetry)
+
+	// Notify channels (admin): reusable delivery channels for notify tasks.
+	pages.GET("/channels", r.pageChannels)
+	pages.POST("/channels", r.handleChannelCreate)
+	pages.POST("/channels/:name/toggle", r.handleChannelToggle)
+	pages.POST("/channels/:name/delete", r.handleChannelDelete)
+	pages.POST("/channels/:name/test", r.handleChannelTest)
 	pages.GET("/users", r.pageUsers)
 	pages.POST("/users", r.handleUserCreate)
 	pages.POST("/users/:user_id/password", r.handleUserPassword)

@@ -49,7 +49,7 @@ func newWebUITestRouter(t *testing.T, token string) http.Handler {
 	cfg.Security.CORS.AllowOrigins = []string{"*"}
 	luaExec := executor.NewLuaExecutor(executor.LuaOptions{})
 	emailSvc := service.NewEmailService(cfg)
-	return New(taskSvc, emailSvc, luaExec, cfg)
+	return New(taskSvc, emailSvc, nil, luaExec, cfg)
 }
 
 func doJSON(h http.Handler, method, path, body string, headers map[string]string) *httptest.ResponseRecorder {

@@ -186,5 +186,6 @@ docker compose -f docker-compose.test.yml down
 | `at` 命令报 401/403 | 凭据链（flag > AT_TOKEN > APPTASK__WEBUI__TOKEN）；403=权限不足（admin 操作） |
 | 配置不生效 | 占位符展开先于 env 覆盖；`${VAR}` 未设=空串；确认三处同步（yaml/config/env 名） |
 | 邮件重复投递 / 卡 sending | `repo/email_queue.go`（claim/reclaim）+ `email_service.go`；多实例必须同 DB |
+| 循环通知 / 渠道发送失败 | `service/notify.go`（渲染/幂等）+ `service/notify_channels.go`（钉钉/飞书/webhook 加签与 errcode）+ `repo/notify_channel.go`；钉钉/飞书 HTTP 200 也可能失败（看 body errcode/code） |
 | 加入节点失败 | 准入模式（`cluster.admission`）、node_id 字符集、weight 上限（1–1000） |
 | 内存/连接涨 | `rdbms.max_open_conns`（默认 25 ≥ workers）与 `conn_max_idle_time` |

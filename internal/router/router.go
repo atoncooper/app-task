@@ -27,7 +27,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func New(taskSvc *service.TaskService, emailSvc *service.EmailService, luaExec *executor.LuaExecutor, cfg *config.Config) *gin.Engine {
+func New(taskSvc *service.TaskService, emailSvc *service.EmailService, notifySvc *service.NotifyService, luaExec *executor.LuaExecutor, cfg *config.Config) *gin.Engine {
 	if !cfg.App.Debug {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -49,23 +49,28 @@ func New(taskSvc *service.TaskService, emailSvc *service.EmailService, luaExec *
 			"change its password in the console account page")
 	}
 
-	// Central secret store resolver: ctx.secret(name) in Lua scripts reads
-	// from the encrypted secret table. Needs the encryption key; without it
-	// ctx.secret fails with a clear message (feature disabled).
+	// Central secret store + notify channel configs: AES-256-GCM with the
+	// shared encryption key. Without it ctx.secret fails with a clear message
+	// (feature disabled) and notify channel entities are disabled (inline
+	// email notifications keep working).
+	var cipher *security.Cipher
 	if cfg.Security.SecretEncKey != "" {
-		if cipher, cerr := security.NewCipher(cfg.Security.SecretEncKey); cerr == nil {
-			luaExec.Secrets = func(name string) (string, error) {
-				row, err := repo.GetSecretByName(name)
-				if err != nil {
-					return "", err
-				}
-				if row == nil {
-					return "", fmt.Errorf("secret not found: %s", name)
-				}
-				return cipher.Decrypt(row.ValueEnc)
-			}
+		if c, cerr := security.NewCipher(cfg.Security.SecretEncKey); cerr == nil {
+			cipher = c
 		} else {
 			slog.Error("secret encryption key invalid", "err", cerr)
+		}
+	}
+	if cipher != nil {
+		luaExec.Secrets = func(name string) (string, error) {
+			row, err := repo.GetSecretByName(name)
+			if err != nil {
+				return "", err
+			}
+			if row == nil {
+				return "", fmt.Errorf("secret not found: %s", name)
+			}
+			return cipher.Decrypt(row.ValueEnc)
 		}
 	}
 	// Console state stores: memory by default (single instance, zero
@@ -94,8 +99,8 @@ func New(taskSvc *service.TaskService, emailSvc *service.EmailService, luaExec *
 		reveals = newRedisRevealStore(rdb)
 		slog.Info("[WEBUI] redis-backed console state enabled")
 	}
-	r := &Router{taskSvc: taskSvc, emailSvc: emailSvc, luaExec: luaExec, cfg: cfg,
-		keys: newKeyService(throttle, limiter, reveals), sessStore: sessStore}
+	r := &Router{taskSvc: taskSvc, emailSvc: emailSvc, notifySvc: notifySvc, luaExec: luaExec, cfg: cfg,
+		cipher: cipher, keys: newKeyService(throttle, limiter, reveals), sessStore: sessStore}
 	r.registerRoutes(e)
 	return e
 }
@@ -110,8 +115,10 @@ const (
 type Router struct {
 	taskSvc     *service.TaskService
 	emailSvc    *service.EmailService
+	notifySvc   *service.NotifyService // nil in tests — channel test-send then 500s
 	luaExec     *executor.LuaExecutor
 	cfg         *config.Config
+	cipher      *security.Cipher // nil without SECURITY__API_KEY_ENCRYPTION_KEY
 	keys        *keyService
 	sessStore   sessionStore // console session backing (memory or redis)
 	consoleAuth *webuiAuthenticator

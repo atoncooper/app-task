@@ -129,6 +129,7 @@ func Migrate() error {
 		&model.Secret{},
 		&model.WebUIUser{},
 		&model.ClusterNode{},
+		&model.NotifyChannel{},
 	); err != nil {
 		return fmt.Errorf("auto migrate: %w", err)
 	}

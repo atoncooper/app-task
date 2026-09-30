@@ -86,6 +86,13 @@ func (r *Router) registerWebuiRoutes(e *gin.Engine, cfg *config.Config, auth *we
 	api.GET("/emails", r.apiListEmails)
 	api.POST("/emails/:email_id/retry", r.apiRetryEmail)
 
+	// Notify channels (admin): CLI surface for the console's channel roster.
+	channels := api.Group("/channels", requireAdmin())
+	channels.GET("", r.apiListChannels)
+	channels.POST("", r.apiUpsertChannel)
+	channels.DELETE("/:name", r.apiDeleteChannel)
+	channels.POST("/:name/test", r.apiTestChannel)
+
 	api.GET("/scripts", r.apiListScripts)
 	api.GET("/scripts/:script_id", r.apiScriptDetail)
 	api.POST("/scripts", r.apiCreateScript)

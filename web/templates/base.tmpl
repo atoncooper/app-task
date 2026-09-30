@@ -49,6 +49,7 @@
       {{if .User.IsAdmin}}<li role="presentation" {{if eq .Active "users"}}class="active"{{end}}><a href="/console/users">账户</a></li>{{end}}
       {{if .User.IsAdmin}}<li role="presentation" {{if eq .Active "apikeys"}}class="active"{{end}}><a href="/console/apikeys">API 密钥</a></li>{{end}}
       {{if .User.IsAdmin}}<li role="presentation" {{if eq .Active "secrets"}}class="active"{{end}}><a href="/console/secrets">密钥管理</a></li>{{end}}
+      {{if .User.IsAdmin}}<li role="presentation" {{if eq .Active "channels"}}class="active"{{end}}><a href="/console/channels">通知渠道</a></li>{{end}}
     </ul>
   </div>
 </div>

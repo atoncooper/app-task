@@ -144,6 +144,12 @@ type NotificationConfig struct {
 	WorkerIntervalSeconds int `yaml:"worker_interval_seconds"`
 	RetryMax              int `yaml:"retry_max"`
 	RetryBackoffBase      int `yaml:"retry_backoff_base"`
+	// Notify channel senders (dingtalk/feishu/webhook): outbound timeout (0 =
+	// 10s default — a hung robot endpoint would stall the scheduler worker)
+	// and the per-channel rate limit (0 = 18/min default; dingtalk robots cap
+	// at 20/min and 429s there are silent failures).
+	HTTPTimeoutSeconds int `yaml:"http_timeout_seconds"`
+	RateLimitPerMin    int `yaml:"rate_limit_per_min"`
 }
 
 // WebUIConfig configures the embedded admin console (served by Gin at /).

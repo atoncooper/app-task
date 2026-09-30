@@ -85,6 +85,8 @@ notification:
   worker_interval_seconds: 30   # 邮件投递 worker 扫描间隔
   retry_max: 5                  # 发送失败最大重试
   retry_backoff_base: 2         # 指数退避基数(秒): 2,4,8,16,32
+  http_timeout_seconds: 10      # notify 渠道(dingtalk/飞书/webhook)出站超时;防 hung 端点冻结 worker
+  rate_limit_per_min: 18        # notify 渠道限速(条/分钟/渠道);钉钉机器人上限 20/min
 
 # 嵌入式管理控制台（Gin 直接提供 /，无独立前端服务）
 webui:

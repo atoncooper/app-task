@@ -25,6 +25,7 @@ import (
 	"app-task/internal/logger"
 	"app-task/internal/repo"
 	"app-task/internal/router"
+	"app-task/internal/security"
 	"app-task/internal/service"
 
 	"github.com/google/uuid"
@@ -124,9 +125,20 @@ func runServer(defaultYAML []byte) error {
 	taskSvc := service.NewTaskService()
 	emailSvc := service.NewEmailService(cfg)
 	// notify: built-in task type that renders its payload and delivers via a
-	// channel (email today; dingtalk/feishu/webhook behind the channel entity
-	// in a later milestone). Recurring notifications = notify + cron.
-	notifySvc := service.NewNotifyService(emailSvc)
+	// channel — inline email, or a named notify_channel row (dingtalk/feishu/
+	// webhook/email group; config decrypts with the secret-store key).
+	// Recurring notifications = notify + cron. Channel entities stay disabled
+	// (fail-loud) without the encryption key; inline email needs no cipher.
+	var notifyCipher *security.Cipher
+	if cfg.Security.SecretEncKey != "" {
+		if c, cerr := security.NewCipher(cfg.Security.SecretEncKey); cerr == nil {
+			notifyCipher = c
+		} else {
+			slog.Error("notify channel encryption key invalid — channel entities disabled", "err", cerr)
+		}
+	}
+	notifySvc := service.NewNotifyService(emailSvc, notifyCipher,
+		time.Duration(cfg.Notification.HTTPTimeoutSeconds)*time.Second, cfg.Notification.RateLimitPerMin)
 
 	// HTTP executor: dispatches tasks to third-party executors (the default
 	// task_type). Supports http:// and https:// (private CA via ca_file,
@@ -200,7 +212,7 @@ func runServer(defaultYAML []byte) error {
 	// service is served over HTTPS with a resolved certificate (explicit
 	// cert/key pair, or an auto-generated self-signed dev certificate with
 	// daily rotation checks, see internal/certgen).
-	handler := router.New(taskSvc, emailSvc, luaExec, cfg)
+	handler := router.New(taskSvc, emailSvc, notifySvc, luaExec, cfg)
 	router.SetSchedulerStats(sched.Stats)
 	router.SetClusterManager(clusterMgr)
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)

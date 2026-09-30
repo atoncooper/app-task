@@ -5,8 +5,12 @@ package service
 // notify task must not enqueue a duplicate email).
 
 import (
+	"bytes"
+	"encoding/base64"
 	"strings"
 	"testing"
+
+	"app-task/internal/security"
 
 	"app-task/internal/db"
 	"app-task/internal/executor"
@@ -17,7 +21,7 @@ import (
 func notifyHandler(t *testing.T) executor.Handler {
 	t.Helper()
 	setupTestDB(t)
-	return NewNotifyService(NewEmailService(emailCfg())).Handler()
+	return NewNotifyService(NewEmailService(emailCfg()), nil, 0, 0).Handler()
 }
 
 func runNotify(t *testing.T, h executor.Handler, taskID, payload string, sink *[]string) error {
@@ -112,7 +116,8 @@ func TestNotifyValidation(t *testing.T) {
 	}{
 		{"missing to", `{"subject":"s","body":"b"}`, "missing"},
 		{"bad address", `{"to":["not-an-email"],"subject":"s","body":"b"}`, "invalid email"},
-		{"unknown channel", `{"channel":"dingtalk","to":["a@x.com"],"subject":"s","body":"b"}`, "unknown notify channel"},
+		// named channel without a cipher: fail loud, never fall back silently
+		{"channel without cipher", `{"channel":"dingtalk","subject":"s","body":"b"}`, "encryption key not configured"},
 		{"empty subject", `{"to":["a@x.com"],"subject":"  ","body":"b"}`, "subject required"},
 		{"empty body", `{"to":["a@x.com"],"subject":"s"}`, "body required"},
 		{"bad template", `{"to":["a@x.com"],"subject":"{{.date","body":"b"}`, "template"},
@@ -125,5 +130,17 @@ func TestNotifyValidation(t *testing.T) {
 		} else if !strings.Contains(err.Error(), c.wantErr) {
 			t.Errorf("%s: error = %q, want contains %q", c.name, err, c.wantErr)
 		}
+	}
+
+	// With a cipher, an unknown channel resolves to "not found" (entity
+	// lookup runs); the censored name must not leak config material.
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("k"), 32))
+	cipher, err := security.NewCipher(key)
+	if err != nil {
+		t.Fatalf("cipher: %v", err)
+	}
+	hc := NewNotifyService(NewEmailService(emailCfg()), cipher, 0, 0).Handler()
+	if err := runNotify(t, hc, "notify-val-unknown", `{"channel":"pagerduty","subject":"s","body":"b"}`, nil); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Errorf("unknown channel with cipher: err = %v, want not found", err)
 	}
 }

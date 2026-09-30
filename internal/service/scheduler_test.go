@@ -27,7 +27,8 @@ func setupTestDB(t *testing.T) {
 	}
 	sqlDB, _ := gdb.DB()
 	sqlDB.SetMaxOpenConns(1)
-	if err := gdb.AutoMigrate(&model.Task{}, &model.TaskLog{}, &model.EmailMessage{}, &model.Script{}, &model.ScriptLog{}, &model.ClusterNode{}, &model.NotifyChannel{}); err != nil {
+	if err := gdb.AutoMigrate(&model.Task{}, &model.TaskLog{}, &model.EmailMessage{}, &model.Script{}, &model.ScriptLog{}, &model.ClusterNode{}, &model.NotifyChannel{},
+		&model.BizCalendar{}, &model.BizCalendarDate{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	db.DB = gdb

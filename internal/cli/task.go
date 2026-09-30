@@ -138,6 +138,7 @@ func newTaskCreateCmd() *cobra.Command {
 		async       bool
 		shard       bool
 		shardTotal  int
+		calendarID  string
 		maxRetry    int
 		weight      int
 		uid         int64
@@ -198,6 +199,7 @@ func newTaskCreateCmd() *cobra.Command {
 				"weight":       weight,
 				"shard":        shard,
 				"shard_total":  shardTotal,
+				"calendar_id":  calendarID,
 			}
 			if len(payloadOut) > 0 {
 				body["payload"] = payloadOut
@@ -228,6 +230,7 @@ func newTaskCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&scriptID, "script-id", "", "lua 任务：自动写入 payload.script_id")
 	cmd.Flags().BoolVar(&async, "async", false, "异步（执行器 202 + 回调）")
 	cmd.Flags().BoolVar(&shard, "shard", false, "分片广播：按存活节点数切片并行执行（payload 注入 shard_index/shard_total）")
+	cmd.Flags().StringVar(&calendarID, "calendar", "", "业务日历名称（cron 物化跳过节假日/调休补班）")
 	cmd.Flags().IntVar(&shardTotal, "shard-total", 0, "固定片数（0 = 自动）")
 	cmd.Flags().IntVar(&maxRetry, "max-retry", 0, "失败重试次数")
 	cmd.Flags().IntVar(&weight, "weight", 1, "WFQ 权重（预留）")

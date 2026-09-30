@@ -68,6 +68,7 @@ env：AT_URL（API 地址）、AT_TOKEN（凭据）。`,
 		newScriptCmd(),
 		newNodeCmd(),
 		newChannelCmd(),
+		newCalendarCmd(),
 		newLogsCmd(),
 		newEmailCmd(),
 	)

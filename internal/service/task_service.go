@@ -48,6 +48,9 @@ type RegisterOptions struct {
 	Shard bool
 	// ShardTotal fixes the fan-out (0 = auto: alive-node count at split time).
 	ShardTotal int
+	// CalendarID: business calendar name applied to cron materialization
+	// (empty = none). One-shot trigger_time tasks ignore it.
+	CalendarID string
 }
 
 func (s *TaskService) RegisterTask(o RegisterOptions) (string, error) {
@@ -66,7 +69,7 @@ func (s *TaskService) RegisterTask(o RegisterOptions) (string, error) {
 	triggerTime := o.TriggerTime
 	cronExpr := o.CronExpr
 	if cronExpr != "" {
-		next, err := NextCronTrigger(cronExpr, time.Now())
+		next, err := NextTriggerForTask(cronExpr, time.Now(), o.CalendarID)
 		if err != nil {
 			return "", fmt.Errorf("invalid cron_expr: %w", err)
 		}
@@ -91,6 +94,7 @@ func (s *TaskService) RegisterTask(o RegisterOptions) (string, error) {
 		Weight:      weight,
 		Shard:       o.Shard,
 		ShardTotal:  o.ShardTotal,
+		CalendarID:  o.CalendarID,
 	}
 	if len(o.Payload) > 0 {
 		task.Payload = datatypes.JSON(o.Payload)
@@ -105,7 +109,7 @@ func (s *TaskService) RegisterTask(o RegisterOptions) (string, error) {
 	if err := repo.CreateTask(task); err != nil {
 		return "", fmt.Errorf("create task: %w", err)
 	}
-	slog.Info("[JOB] registered", "task_id", taskID, "task_type", taskType, "executor_url", o.ExecutorURL, "async", o.Async, "cron", cronExpr, "max_retry", maxRetry, "weight", weight, "trigger", formatBeijing(triggerTime), "shard", o.Shard)
+	slog.Info("[JOB] registered", "task_id", taskID, "task_type", taskType, "executor_url", o.ExecutorURL, "async", o.Async, "cron", cronExpr, "max_retry", maxRetry, "weight", weight, "trigger", formatBeijing(triggerTime), "shard", o.Shard, "calendar", o.CalendarID)
 	return taskID, nil
 }
 

@@ -43,6 +43,9 @@ type Task struct {
 	// 分片广播: shard=true 每次触发按存活节点数分裂成 N 个子任务并行执行;
 	// 子任务携带 parent_task_id + shard_index, 父任务在全部子片终态后收尾。
 	// 普通任务 parent_task_id 为 NULL（唯一索引 uk_shard 因此不影响它们）。
+	// 业务日历：cron 物化时按日历跳过节假日/补班调休（空 = 不使用，行为不变）。
+	// 存日历名称（biz_calendar.name，唯一键）——可读且控制台/CLI 直接引用。
+	CalendarID   string     `gorm:"column:calendar_id;size:64" json:"calendar_id,omitempty"`
 	Shard        bool       `gorm:"column:shard;not null" json:"shard"`
 	ShardTotal   int        `gorm:"column:shard_total;not null;default:0" json:"shard_total"` // 父: 实际片数(0=未分裂); 子: 总片数
 	ShardIndex   int        `gorm:"column:shard_index;not null;default:0;index:uk_shard,unique" json:"shard_index"`
@@ -57,6 +60,38 @@ type Task struct {
 }
 
 func (Task) TableName() string { return "task" }
+
+// BizCalendar is a named set of date overrides applied when materializing cron
+// occurrences: "off" dates skip the trigger (法定节假日), "work" dates make a
+// weekend fire weekday-based crons (调休补班). Dates not listed follow the
+// cron expression as-is.
+type BizCalendar struct {
+	ID          int64     `gorm:"primaryKey;autoIncrement" json:"-"`
+	CalendarID  string    `gorm:"column:calendar_id;uniqueIndex;size:36" json:"calendar_id"`
+	Name        string    `gorm:"column:name;uniqueIndex;size:64;not null" json:"name"`
+	Description string    `gorm:"column:description;size:255" json:"description"`
+	CreatedBy   string    `gorm:"column:created_by;size:64" json:"created_by"`
+	CreatedAt   time.Time `gorm:"column:created_at;autoCreateTime" json:"created_at"`
+	UpdatedAt   time.Time `gorm:"column:updated_at;autoUpdateTime" json:"updated_at"`
+}
+
+func (BizCalendar) TableName() string { return "biz_calendar" }
+
+// BizCalendarDate is one date override within a calendar.
+type BizCalendarDate struct {
+	ID         int64     `gorm:"primaryKey;autoIncrement" json:"-"`
+	CalendarID string    `gorm:"column:calendar_id;not null;index;uniqueIndex:uk_cal_date,size:36" json:"calendar_id"`
+	Date       time.Time `gorm:"column:date;type:date;not null;uniqueIndex:uk_cal_date" json:"date"`
+	DayType    string    `gorm:"column:day_type;size:8;not null" json:"day_type"` // off | work
+}
+
+func (BizCalendarDate) TableName() string { return "biz_calendar_date" }
+
+// Calendar day types (constants — never literals in queries).
+const (
+	CalendarDayOff  = "off"
+	CalendarDayWork = "work"
+)
 
 // TaskLog is the audit trail of every trigger/execution: which task, which
 // executor, what was sent/received, outcome and duration. This is the

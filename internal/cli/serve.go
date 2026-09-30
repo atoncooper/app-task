@@ -123,6 +123,10 @@ func runServer(defaultYAML []byte) error {
 	// standardized emails, app-task queues + delivers with retries).
 	taskSvc := service.NewTaskService()
 	emailSvc := service.NewEmailService(cfg)
+	// notify: built-in task type that renders its payload and delivers via a
+	// channel (email today; dingtalk/feishu/webhook behind the channel entity
+	// in a later milestone). Recurring notifications = notify + cron.
+	notifySvc := service.NewNotifyService(emailSvc)
 
 	// HTTP executor: dispatches tasks to third-party executors (the default
 	// task_type). Supports http:// and https:// (private CA via ca_file,
@@ -145,6 +149,7 @@ func runServer(defaultYAML []byte) error {
 	reg := executor.NewRegistry()
 	reg.Register("http", httpExec.Handler())
 	reg.Register("lua", luaExec.Handler())
+	reg.Register("notify", notifySvc.Handler())
 
 	// Cluster identity: one node id shared by the scheduler owner and the
 	// cluster roster (task.owner / cluster_node.node_id are the same value).

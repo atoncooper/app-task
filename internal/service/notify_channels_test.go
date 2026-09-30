@@ -201,3 +201,52 @@ func TestChannelRateLimiter(t *testing.T) {
 		t.Fatal("other channel must be independent")
 	}
 }
+
+func TestTeamsSendAdaptiveCard(t *testing.T) {
+	setupTestDB(t)
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.WriteHeader(http.StatusAccepted) // Workflows answers 202 on accept
+	}))
+	defer srv.Close()
+
+	cipher := testCipher(t)
+	h := NewNotifyService(NewEmailService(emailCfg()), cipher, 0, 0).Handler()
+	mustChannel(t, "ops-teams", repo.ChannelTypeTeams, `{"webhook":"`+srv.URL+`/workflows/x"}`, cipher)
+	if err := runNotify(t, h, "notify-teams-1", `{
+		"channel":"ops-teams","subject":"发布 **{{.date}}**","body":"- v1.2 上线\n- [看板](https://x)"
+	}`, nil); err != nil {
+		t.Fatalf("teams send: %v", err)
+	}
+	var sent map[string]any
+	if err := json.Unmarshal([]byte(gotBody), &sent); err != nil {
+		t.Fatalf("body: %v (%s)", err, gotBody)
+	}
+	if sent["type"] != "message" {
+		t.Fatalf("envelope type = %v, want message", sent["type"])
+	}
+	atts := sent["attachments"].([]any)
+	card := atts[0].(map[string]any)
+	if card["contentType"] != "application/vnd.microsoft.card.adaptive" {
+		t.Fatalf("contentType = %v", card["contentType"])
+	}
+	blocks := card["content"].(map[string]any)["body"].([]any)
+	if !strings.Contains(blocks[0].(map[string]any)["text"].(string), "发布") ||
+		!strings.Contains(blocks[1].(map[string]any)["text"].(string), "v1.2 上线") {
+		t.Fatalf("card text not rendered: %v %v", blocks[0], blocks[1])
+	}
+
+	// Failure path: Workflows rejects (4xx) — must fail the task.
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+	}))
+	defer srv2.Close()
+	h2 := NewNotifyService(NewEmailService(emailCfg()), testCipher(t), 0, 0).Handler()
+	mustChannel(t, "ops-teams-bad", repo.ChannelTypeTeams, `{"webhook":"`+srv2.URL+`"}`, cipher)
+	if err := runNotify(t, h2, "notify-teams-2", `{"channel":"ops-teams-bad","subject":"s","body":"b"}`, nil); err == nil ||
+		!strings.Contains(err.Error(), "403") {
+		t.Fatalf("4xx must fail the task, got %v", err)
+	}
+}

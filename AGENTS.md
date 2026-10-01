@@ -36,13 +36,17 @@ internal/
   executor/                执行器：HTTP 透传（executor.go/http.go）+ 内置 Lua 沙箱（lua.go）
   service/                 调度器（scheduler.go）+ 邮件投递 worker + 任务服务
   cluster/                 节点名册：心跳/存活/死节点判定/加入转正
-  router/                  Gin：控制台 SSR（web/templates）+ /api/* + API key 中间件
+  dto/                     传输层请求体（DTO）：纯结构 + JSON/绑定校验标签，禁止 import 内部包
+  auth/                    认证服务：API key 校验/生成/scope、webui 会话认证
                            + 状态存储（memory/redis：会话/节流/限流/一次性展示）
+  router/                  HTTP 端点层：路由装配 + 薄 handler（绑定 DTO → 调 service）
+                           + 控制台 SSR（web/templates）+ /api/*
+    router/middleware/     HTTP 中间件：API key 门禁/CORS/安全响应头/统一错误信封
   certgen/                 控制台 HTTPS 自签证书生成与轮换
   security/                AES-256-GCM（中心密钥库）
   logger/                  slog + GORM logger
 bench/                     基准 + 并发/一致性不变量测试（独立于 internal 的黑盒包）
-docs/                      cli.md / cluster.md（运维）/ design.md（技术设计）
+docs/                      cli.md / cluster.md（运维）/ design.md（技术设计）/ api.md（服务面 API 契约，改 /api/* 之外的端点必须同步）
 web/                       控制台模板与静态资源（Bootstrap 3 + CodeMirror 5，go:embed）
 default.yaml               默认配置（嵌入二进制；支持 ${VAR} 占位符）
 ```
@@ -53,7 +57,12 @@ default.yaml               默认配置（嵌入二进制；支持 ${VAR} 占位
 HTTP 请求
   │
   ▼
-router/（参数解析 + 鉴权 + 转发）
+router/middleware/（API key 门禁 + CORS + 安全响应头 + 统一错误信封）
+  │  凭证校验委托 ▼
+auth/（key 校验/生成/scope、webui 会话；状态存储 memory/redis）
+  │
+  ▼
+router/（端点层：DTO 绑定 + 校验 + 转发；控制台 SSR + /api/*）
   │
   ▼
 service/（调度器/任务服务/邮件 worker）        repo/（数据访问，唯一写库方）
@@ -65,9 +74,13 @@ executor/（HTTP 透传 / Lua 沙箱）           MySQL（自有实例，schema 
 **方向约束：**
 
 - ✅ `router → service → repo → db`，`service → executor`；
+- ✅ `router/middleware → auth → repo`、`router → auth`（仅凭据访问器）；
 - ✅ 同层允许：`service/scheduler → repo/*`、`router → repo`（仅只读查询）；
-- ❌ `repo` 禁止依赖 `service`/`router`（反向调用）；
+- ❌ `dto` 禁止 import 任何内部包（纯数据结构，只有 json/binding 标签）；
+- ❌ `auth`/`middleware` 禁止依赖 `router`（反向调用；`middleware → auth` 除外）；
+- ❌ `repo` 禁止依赖 `service`/`router`/`auth`（反向调用）；
 - ❌ `executor` 禁止访问 `db`/`repo`（执行器只拿 ctx，不碰存储）；
+- ❌ 请求体结构必须定义在 `dto` 包（命名类型），禁止在 handler 内联匿名 struct；
 - ❌ 禁止跨层改动（问题在认领就只改认领，不顺手改调度/路由）。
 
 **禁止行为：**

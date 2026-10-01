@@ -44,12 +44,53 @@ internal/repo/           数据访问（认领/finalize/名册/密钥/邮件队�
 internal/executor/       执行器：HTTP 透传 + 内置 Lua 沙箱
 internal/service/        调度器 + 邮件投递 worker + 任务服务
 internal/cluster/        节点名册：心跳/存活/死节点判定
-internal/router/         Gin 路由：控制台(SSR)/api/* + API key 中间件 + 状态存储
+internal/dto/            传输层请求体（DTO）：纯结构 + json/binding 标签，无内部依赖
+internal/auth/           认证服务：API key 校验/生成/scope、webui 会话
+                         + 状态存储（memory/redis：会话/节流/限流/一次性展示）
+internal/router/         HTTP 端点层：薄 handler（绑定 DTO → 调 service）
+                         + 路由装配 + 控制台 SSR（web/templates）+ /api/*
+internal/router/middleware/  HTTP 中间件：API key 门禁/CORS/安全响应头/错误信封
 internal/certgen/        控制台 HTTPS 自签证书生成与轮换
 internal/security/       AES-256-GCM（中心密钥库）
 internal/bench/…         bench/（仓库根）基准与并发/一致性测试
 web/                     控制台模板与静态资源（Bootstrap 3 + CodeMirror 5，go:embed）
 ```
+
+### 2.1 HTTP 面分层与请求路径
+
+服务面（`/tasks`、`/scripts*`、`/internal/*`）与管理面（`/console/*`、
+`/api/*`）共用一个 gin 引擎，自外向内分四层，依赖只允许由外向内：
+
+```
+请求 → middleware/（APIKeyAuth/CORS/SecurityHeaders/错误信封）
+         │ 凭证校验委托 ▼
+       auth/（KeyService：key 哈希查找+scope+节流限流；Authenticator：
+         webui 会话/主令牌；状态存储 memory|redis）
+         │
+       router/（端点：绑定 dto 请求体 → 调 service → 写响应）
+         │
+       service/ → repo/ → MySQL
+```
+
+分层纪律（与 AGENTS.md §三 方向约束一致）：**dto** 是纯数据结构（禁止
+import 内部包）；**auth** 只管认证授权、不碰业务状态；**middleware** 只做
+HTTP 边界事务（提凭证、写错误信封），校验逻辑一律委托 auth；**handler 不
+内联匿名请求结构**——请求体必须是 dto 包的命名类型，与 [api.md](api.md)
+契约一一对应。
+
+### 2.2 错误信封与 uid 信任模型
+
+- **错误信封**：服务面错误统一 `{"detail": 兼容旧文案, "error": {"code":
+  稳定错误码, "message": 人读文案}}`（middleware.RespondError 统一出口）。
+  错误码表见 [api.md §3.1](api.md)。
+- **uid 信任模型**：任务按 uid 归属，两种模式——**绑定 key**（key 上
+  `uid > 0`，一切以 key 为准，注册体 uid 不匹配 403，X-Uid 被忽略）与
+  **未绑定 key**（网关注入模式：信任 APISIX 注入的 X-Uid 头；bootstrap
+  key 默认未绑定）。直连场景必须用绑定 key，否则持有 key 即可读任意 uid。
+- **executor_url 校验在 service 层**：`RegisterTask` 对所有调用面统一
+  强制绝对 http/https URL；`security.executor_block_private_hosts` 开启时
+  追加私网段拒绝（DNS 解析、fail-closed）。`ErrInvalidExecutorURL` 由
+  transport 层映射为 `invalid_executor_url` 错误码。
 
 ## 3. 任务生命周期与状态机
 
@@ -129,6 +170,8 @@ token 且匹配当前认领才生效：
 - 多实例下认领互斥，不会重复投递；密钥值全程脱敏（日志/错误信息）。
 
 ## 8. 控制台状态存储（memory / redis）
+
+（实现：internal/auth/state_stores.go，`auth.NewStateStores` 统一选择。）
 
 控制台的会话、API 密钥一次性展示、失败节流、每 key 限流默认存**进程内存**
 （单实例零依赖）。多实例共享一个控制台域名时切换 `webui.session_store:
@@ -246,6 +289,9 @@ GRANT ALL ON app_task.* TO 'app_task'@'172.18.0.%';
 | `rdbms.*` | 25/10 池等 | 见 §11 |
 | `redis.*` | 库默认 | 见 §11 |
 | `webui.session_store` | memory | memory \| redis |
+| `security.service_keys` | [] | bootstrap API key（种入 api_key 表，env `APPTASK__SECURITY__SERVICE_KEYS`） |
+| `security.executor_block_private_hosts` | false | SSRF 加固：注册时拒绝 executor_url 指向回环/私网/链路本地（DNS 解析，fail-closed） |
+| `security.cors.allow_origins` | localhost:3000 | 允许跨域的 Origin 白名单（CORS 反射 + Vary: Origin） |
 | `webui.session_ttl_minutes` | 720 | 登录会话有效期 |
 | `lua.timeout_seconds` | 30 | 单脚本执行超时 |
 | `email.provider` | resend | 邮件通道 |

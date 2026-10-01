@@ -102,9 +102,10 @@ at task create --executor-url https://你的接口/run --trigger-time "2026-10-0
 
 ## 文档
 
+- [docs/api.md](docs/api.md) —— 服务面 HTTP API 契约（认证/scope/端点/错误码；单一事实来源）
 - [docs/cli.md](docs/cli.md) —— `at` 命令行完整参考
 - [docs/cluster.md](docs/cluster.md) —— 集群部署与运维指南
-- [docs/design.md](docs/design.md) —— 技术设计与实现细节（想深入了解再看）
+- [docs/design.md](docs/design.md) —— 技术设计与实现细节（含 HTTP 分层架构，想深入了解再看）
 
 ## 循环通知（钉钉 / 飞书 / Teams / 邮件）
 

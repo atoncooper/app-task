@@ -14,6 +14,78 @@
     {{end}}
   </div>
 </div>
+
+<div class="modal fade" id="ai-gen-modal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header"><h4 class="modal-title">AI 生成 Lua 脚本</h4></div>
+      <div class="modal-body">
+        <textarea id="ai-gen-requirement" class="form-control" rows="4"
+          placeholder="描述需求，如：每分钟检查订单接口 /orders，非 200 用 ctx.retry 重试，成功后把状态码和耗时记日志"></textarea>
+        <p class="help-block" id="ai-gen-explanation" style="display:none"></p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-default" data-modal-close>取消</button>
+        <button type="button" class="btn btn-primary" id="ai-gen-submit">生成并填入编辑器</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var btn = document.getElementById('ai-gen-btn');
+  if (!btn) return;
+  var modal = document.getElementById('ai-gen-modal');
+  var req = document.getElementById('ai-gen-requirement');
+  var submit = document.getElementById('ai-gen-submit');
+  var expl = document.getElementById('ai-gen-explanation');
+
+  btn.addEventListener('click', function () {
+    req.value = '';
+    expl.style.display = 'none';
+    // AppTaskModals 约定（app.js）：data-modal-open 按钮打开；这里手动触发
+    if (window.AppTaskModals && AppTaskModals.open) { AppTaskModals.open(modal); }
+    else { modal.style.display = 'block'; }
+  });
+  var closeBtn = modal.querySelector('[data-modal-close]');
+  if (closeBtn) closeBtn.addEventListener('click', function () {
+    if (window.AppTaskModals && AppTaskModals.close) { AppTaskModals.close(modal); }
+    else { modal.style.display = 'none'; }
+  });
+
+  submit.addEventListener('click', function () {
+    var text = req.value.trim();
+    if (!text) { alert('请先描述需求'); return; }
+    submit.disabled = true;
+    submit.textContent = '生成中…';
+    fetch('/console/scripts/ai-generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requirement: text })
+    }).then(function (r) {
+      return r.json().then(function (j) { return { ok: r.ok, j: j }; });
+    }).then(function (res) {
+      submit.disabled = false;
+      submit.textContent = '生成并填入编辑器';
+      if (!res.ok) { alert(res.j.detail || '生成失败'); return; }
+      var cm = window.AppTaskEditors ? AppTaskEditors.get('source') : null;
+      if (cm) cm.setValue(res.j.code); else { document.querySelector('[name=source]').value = res.j.code; }
+      if (res.j.explanation) {
+        expl.textContent = 'AI 说明：' + res.j.explanation + '（代码已填入编辑器，请人工审核后再保存）';
+        expl.style.display = 'block';
+      }
+      if (window.AppTaskModals && AppTaskModals.close) { AppTaskModals.close(modal); }
+      else { modal.style.display = 'none'; }
+    }).catch(function (e) {
+      submit.disabled = false;
+      submit.textContent = '生成并填入编辑器';
+      alert('请求失败：' + e.message);
+    });
+  });
+})();
+</script>
 {{end}}
 {{end}}
 
@@ -55,6 +127,7 @@
         <div class="panel-note" style="border:0;padding:8px 0 0">沙箱无 os/io/package；出网仅限 ctx.http_*；单脚本超时 <span class="mono">lua.timeout_seconds</span>（默认 30s）。</div>
       </details>
       <span class="muted" style="align-self:center;margin-right:auto">Ctrl+S 保存 · Ctrl-/ 注释 · Tab 缩进 · 括号自动补全</span>
+      <button type="button" class="btn btn-info" id="ai-gen-btn" title="描述需求，AI 生成脚本填入编辑器（保存前请人工审核）">AI 生成</button>
       <a class="btn btn-default" href="/console/scripts">取消</a>
     </div>
   </form>

@@ -271,6 +271,13 @@ func (e *LuaExecutor) release(ls *lua.LState) {
 	}
 }
 
+// CompileForValidation parses + compiles Lua source without executing it —
+// the AI script generator reuses this gate so generated code must build
+// exactly like an uploaded one.
+func CompileForValidation(src string) (*lua.FunctionProto, error) {
+	return compileSource(src)
+}
+
 // compileSource parses + compiles a Lua source string into a FunctionProto
 // (cached per script version; execution only LoadProto afterwards).
 func compileSource(src string) (*lua.FunctionProto, error) {

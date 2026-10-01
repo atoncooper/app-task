@@ -221,7 +221,7 @@ func runServer(defaultYAML []byte) error {
 	// service is served over HTTPS with a resolved certificate (explicit
 	// cert/key pair, or an auto-generated self-signed dev certificate with
 	// daily rotation checks, see internal/certgen).
-	handler := router.New(taskSvc, emailSvc, notifySvc, luaExec, cfg)
+	handler := router.New(taskSvc, emailSvc, notifySvc, llmClient, luaExec, cfg)
 
 	router.SetSchedulerStats(sched.Stats)
 	router.SetClusterManager(clusterMgr)

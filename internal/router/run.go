@@ -17,9 +17,11 @@ import (
 	"strings"
 	"time"
 
+	"app-task/internal/dto"
 	"app-task/internal/executor"
 	"app-task/internal/model"
 	"app-task/internal/repo"
+	"app-task/internal/router/middleware"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -78,15 +80,12 @@ func (r *Router) runScriptOnce(scriptID string, payload []byte) (*model.ScriptRu
 
 func (r *Router) runScriptAPI(c *gin.Context) {
 	if c.Request.ContentLength > maxTaskPayloadBytes {
-		c.JSON(http.StatusBadRequest, gin.H{"detail": "payload too large"})
+		middleware.RespondError(c, http.StatusBadRequest, "payload_too_large", "payload too large")
 		return
 	}
-	var req struct {
-		ScriptID string          `json:"script_id" binding:"required,max=64"`
-		Payload  json.RawMessage `json:"payload"`
-	}
+	var req dto.RunScriptRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request: " + err.Error()})
+		middleware.RespondError(c, http.StatusBadRequest, "invalid_request", "invalid request: "+err.Error())
 		return
 	}
 	payload := []byte(req.Payload)
@@ -95,11 +94,11 @@ func (r *Router) runScriptAPI(c *gin.Context) {
 	}
 	run, err := r.runScriptOnce(req.ScriptID, payload)
 	if errors.Is(err, repo.ErrScriptNotFound) {
-		c.JSON(http.StatusNotFound, gin.H{"detail": "script not found: " + req.ScriptID})
+		middleware.RespondError(c, http.StatusNotFound, "script_not_found", "script not found: "+req.ScriptID)
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": "run failed: " + err.Error()})
+		middleware.RespondError(c, http.StatusInternalServerError, "internal_error", "run failed: "+err.Error())
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{

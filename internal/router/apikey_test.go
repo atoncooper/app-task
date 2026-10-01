@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"app-task/internal/auth"
 	"app-task/internal/model"
 	"app-task/internal/repo"
 )
@@ -19,11 +20,11 @@ const registerBody = `{"uid":1,"task_type":"http","payload":{},"executor_url":"h
 // mkRow builds an APIKey row whose hash corresponds to the plaintext.
 func mkRow(name, plaintext string) model.APIKey {
 	return model.APIKey{
-		KeyID:     newKeyID(),
+		KeyID:     auth.NewKeyID(),
 		Name:      name,
-		KeyHash:   hashAPIKey(plaintext),
+		KeyHash:   auth.HashAPIKey(plaintext),
 		KeyPrefix: plaintext[:12] + "…",
-		Scopes:    scopeTasks + "," + scopeScripts + "," + scopeInternal,
+		Scopes:    auth.ScopeTasks + "," + auth.ScopeScripts + "," + auth.ScopeInternal,
 		Status:    repo.APIKeyStatusActive,
 		CreatedBy: "test",
 	}
@@ -47,7 +48,7 @@ func TestAPIKeyAuth(t *testing.T) {
 		{"X-API-Key": testServiceKey},
 		{"Authorization": "Bearer " + testServiceKey},
 	} {
-		if w := doJSON(h, "POST", "/tasks/register", registerBody, headers); w.Code != http.StatusOK {
+		if w := doJSON(h, "POST", "/tasks/register", registerBody, headers); w.Code != http.StatusCreated {
 			t.Fatalf("headers %v: status = %d, body = %s", headers, w.Code, w.Body.String())
 		}
 	}
@@ -66,7 +67,7 @@ func TestAPIKeyRevocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	headers := map[string]string{"X-API-Key": plaintext}
-	if w := doJSON(h, "POST", "/tasks/register", registerBody, headers); w.Code != http.StatusOK {
+	if w := doJSON(h, "POST", "/tasks/register", registerBody, headers); w.Code != http.StatusCreated {
 		t.Fatalf("fresh key: status = %d, body = %s", w.Code, w.Body.String())
 	}
 
@@ -95,7 +96,7 @@ func TestAPIKeyConsoleSessionAccepted(t *testing.T) {
 		t.Fatal("login returned no session cookie")
 	}
 	headers := map[string]string{"Cookie": "apptask_session=" + session}
-	if w := doJSON(h, "POST", "/tasks/register", registerBody, headers); w.Code != http.StatusOK {
+	if w := doJSON(h, "POST", "/tasks/register", registerBody, headers); w.Code != http.StatusCreated {
 		t.Fatalf("console session: status = %d, body = %s", w.Code, w.Body.String())
 	}
 }
@@ -167,7 +168,7 @@ func TestAPIKeyConsoleGenerateFlow(t *testing.T) {
 	}
 
 	// the generated key authenticates the service surface
-	if w := doJSON(h, "POST", "/tasks/register", registerBody, map[string]string{"X-API-Key": plaintext}); w.Code != http.StatusOK {
+	if w := doJSON(h, "POST", "/tasks/register", registerBody, map[string]string{"X-API-Key": plaintext}); w.Code != http.StatusCreated {
 		t.Fatalf("generated key: status = %d, body = %s", w.Code, w.Body.String())
 	}
 }
@@ -186,8 +187,8 @@ func TestAPIKeyScopesAndRateLimit(t *testing.T) {
 	if err := repo.CreateAPIKey(mkRowPtr("tasks-only", tasksOnly)); err != nil {
 		t.Fatal(err)
 	}
-	row, _ := repo.GetAPIKeyByHash(hashAPIKey(tasksOnly))
-	row.Scopes = scopeTasks
+	row, _ := repo.GetAPIKeyByHash(auth.HashAPIKey(tasksOnly))
+	row.Scopes = auth.ScopeTasks
 	if err := repo.UpdateAPIKeyScopesAndRate(row.KeyID, row.Scopes, 2); err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +196,7 @@ func TestAPIKeyScopesAndRateLimit(t *testing.T) {
 	hMap := map[string]string{"X-API-Key": tasksOnly}
 
 	// tasks path: allowed
-	if w := doJSON(h, "POST", "/tasks/register", registerBody, hMap); w.Code != http.StatusOK {
+	if w := doJSON(h, "POST", "/tasks/register", registerBody, hMap); w.Code != http.StatusCreated {
 		t.Fatalf("tasks path: status = %d, body = %s", w.Code, w.Body.String())
 	}
 
@@ -383,9 +384,9 @@ func TestBootstrapKeyUpsert(t *testing.T) {
 	// The router already seeded the env service key ("bootstrap-service-key");
 	// exercise the upsert lifecycle on its own name here.
 	row := &model.APIKey{
-		KeyID: newKeyID(), Name: "bootstrap-rotation-key",
-		KeyHash: hashAPIKey("env-key-v1"), KeyPrefix: "env-key-v1…",
-		Scopes: scopeTasks, Status: repo.APIKeyStatusActive, CreatedBy: "bootstrap",
+		KeyID: auth.NewKeyID(), Name: "bootstrap-rotation-key",
+		KeyHash: auth.HashAPIKey("env-key-v1"), KeyPrefix: "env-key-v1…",
+		Scopes: auth.ScopeTasks, Status: repo.APIKeyStatusActive, CreatedBy: "bootstrap",
 	}
 	created, err := repo.UpsertAPIKey(row)
 	if err != nil || !created {
@@ -393,27 +394,27 @@ func TestBootstrapKeyUpsert(t *testing.T) {
 	}
 	// same env key again → no-op, single row
 	created, err = repo.UpsertAPIKey(&model.APIKey{
-		KeyID: newKeyID(), Name: "bootstrap-rotation-key",
-		KeyHash: hashAPIKey("env-key-v1"), KeyPrefix: "env-key-v1…",
-		Scopes: scopeTasks, Status: repo.APIKeyStatusActive, CreatedBy: "bootstrap",
+		KeyID: auth.NewKeyID(), Name: "bootstrap-rotation-key",
+		KeyHash: auth.HashAPIKey("env-key-v1"), KeyPrefix: "env-key-v1…",
+		Scopes: auth.ScopeTasks, Status: repo.APIKeyStatusActive, CreatedBy: "bootstrap",
 	})
 	if err != nil || created {
 		t.Fatalf("reseed same key: created=%v err=%v", created, err)
 	}
 	// rotated env key (same name, new hash) → hash refreshed in place
 	created, err = repo.UpsertAPIKey(&model.APIKey{
-		KeyID: newKeyID(), Name: "bootstrap-rotation-key",
-		KeyHash: hashAPIKey("env-key-v2"), KeyPrefix: "env-key-v2…",
-		Scopes: scopeTasks, Status: repo.APIKeyStatusActive, CreatedBy: "bootstrap",
+		KeyID: auth.NewKeyID(), Name: "bootstrap-rotation-key",
+		KeyHash: auth.HashAPIKey("env-key-v2"), KeyPrefix: "env-key-v2…",
+		Scopes: auth.ScopeTasks, Status: repo.APIKeyStatusActive, CreatedBy: "bootstrap",
 	})
 	if err != nil || created {
 		t.Fatalf("rotation: created=%v err=%v", created, err)
 	}
-	updated, err := repo.GetAPIKeyByHash(hashAPIKey("env-key-v2"))
+	updated, err := repo.GetAPIKeyByHash(auth.HashAPIKey("env-key-v2"))
 	if err != nil || updated == nil {
 		t.Fatalf("rotated hash missing: %v %v", updated, err)
 	}
-	stale, _ := repo.GetAPIKeyByHash(hashAPIKey("env-key-v1"))
+	stale, _ := repo.GetAPIKeyByHash(auth.HashAPIKey("env-key-v1"))
 	if stale != nil {
 		t.Fatal("stale hash still present after rotation")
 	}
@@ -422,14 +423,14 @@ func TestBootstrapKeyUpsert(t *testing.T) {
 		t.Fatal(err)
 	}
 	created, err = repo.UpsertAPIKey(&model.APIKey{
-		KeyID: newKeyID(), Name: "user-key",
-		KeyHash: hashAPIKey("env-override-attempt"), KeyPrefix: "x…",
+		KeyID: auth.NewKeyID(), Name: "user-key",
+		KeyHash: auth.HashAPIKey("env-override-attempt"), KeyPrefix: "x…",
 		Status: repo.APIKeyStatusActive, CreatedBy: "bootstrap",
 	})
 	if err != nil || created {
 		t.Fatalf("user-row collision: created=%v err=%v", created, err)
 	}
-	touched, _ := repo.GetAPIKeyByHash(hashAPIKey("env-override-attempt"))
+	touched, _ := repo.GetAPIKeyByHash(auth.HashAPIKey("env-override-attempt"))
 	if touched != nil {
 		t.Fatal("bootstrap seed must not overwrite user-created rows")
 	}

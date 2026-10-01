@@ -2,23 +2,23 @@
 //
 // File layout (one concern per file):
 //
-//	router.go   — engine assembly: New / Router / routes / CORS
+//	router.go   - engine assembly: New / Router / routes
 //	task.go      — task endpoints (/tasks/*) + shared helpers
 //	complete.go — async callback from third-party executors
 //	script.go   — Lua script management (/scripts*)
 package router
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 
+	"app-task/internal/auth"
 	"app-task/internal/config"
 	"app-task/internal/executor"
 	"app-task/internal/logger"
 	"app-task/internal/repo"
+	"app-task/internal/router/middleware"
 	"app-task/internal/security"
 	"app-task/internal/service"
 
@@ -40,8 +40,8 @@ func New(taskSvc *service.TaskService, emailSvc *service.EmailService, notifySvc
 	_ = e.SetTrustedProxies(nil)
 	e.Use(logger.GinLogger())
 	e.Use(logger.GinRecovery())
-	e.Use(securityHeaders())
-	e.Use(corsMiddleware(cfg.Security.CORS.AllowOrigins))
+	e.Use(middleware.SecurityHeaders())
+	e.Use(middleware.CORS(cfg.Security.CORS.AllowOrigins))
 
 	if cfg.WebUI.Enabled && cfg.WebUI.Token == "" {
 		slog.Warn("webui master token not set (optional API key); console login is " +
@@ -73,34 +73,18 @@ func New(taskSvc *service.TaskService, emailSvc *service.EmailService, notifySvc
 			return cipher.Decrypt(row.ValueEnc)
 		}
 	}
-	// Console state stores: memory by default (single instance, zero
+	// Console/auth backing stores: memory by default (single instance, zero
 	// dependencies); Redis when webui.session_store=redis (multi-instance
-	// deployments share sessions, key reveals and throttles). A missing or
-	// malformed redis URL fails loud — half-configured console state is worse
-	// than none.
-	var sessStore sessionStore
-	throttle := throttler(newMemoryThrottler(webuiMaxFails, webuiFailWindow))
-	limiter := keyRateLimiter(newMemoryLimiter())
-	reveals := revealStore(newMemoryRevealStore())
-	if cfg.WebUI.SessionStore == "redis" {
-		if cfg.Redis.URL == "" {
-			panic("webui.session_store=redis requires redis.url (env APPTASK__REDIS__URL or shared REDIS__URL)")
-		}
-		rdb, err := newRedisClient(cfg.Redis)
-		if err != nil {
-			panic("webui.session_store=redis: bad redis.url: " + err.Error())
-		}
-		if err := rdb.Ping(context.Background()).Err(); err != nil {
-			slog.Error("[WEBUI] redis ping failed — throttles fail open, but logins need redis back", "err", err)
-		}
-		sessStore = newRedisSessionStore(rdb)
-		throttle = newRedisThrottler(rdb, webuiMaxFails, webuiFailWindow)
-		limiter = newRedisLimiter(rdb)
-		reveals = newRedisRevealStore(rdb)
-		slog.Info("[WEBUI] redis-backed console state enabled")
-	}
+	// deployments share sessions, key reveals and throttles). Store selection
+	// and failure semantics live in the auth package.
+	stores := auth.NewStateStores(cfg)
 	r := &Router{taskSvc: taskSvc, emailSvc: emailSvc, notifySvc: notifySvc, scriptGen: service.NewScriptGenService(llm), luaExec: luaExec, cfg: cfg,
-		cipher: cipher, keys: newKeyService(throttle, limiter, reveals), sessStore: sessStore}
+		cipher: cipher, keys: auth.NewKeyService(stores.Throttle, stores.Limiter, stores.Reveals)}
+	if cfg.WebUI.Enabled {
+		// Console authenticator shares the session store; its login throttle
+		// stays per-process memory (nil → memory default, pre-existing).
+		r.consoleAuth = auth.NewWebUIAuthenticator(cfg.WebUI.Token, cfg.WebUI.SessionTTLMinutes, stores.Sessions, nil)
+	}
 	r.registerRoutes(e)
 	return e
 }
@@ -110,6 +94,7 @@ func New(taskSvc *service.TaskService, emailSvc *service.EmailService, notifySvc
 const (
 	maxTaskPayloadBytes = 64 << 10  // /tasks/register + /internal/script/run payload
 	maxEmailBodyBytes   = 256 << 10 // /internal/email/send (HTML bodies can be sizable)
+	maxListLimit        = 200       // /tasks list page size cap (防撑爆: unbounded rows starve the pool)
 )
 
 type Router struct {
@@ -119,10 +104,9 @@ type Router struct {
 	scriptGen   *service.ScriptGenService // nil when AI unconfigured — endpoint 503s
 	luaExec     *executor.LuaExecutor
 	cfg         *config.Config
-	cipher      *security.Cipher // nil without SECURITY__API_KEY_ENCRYPTION_KEY
-	keys        *keyService
-	sessStore   sessionStore // console session backing (memory or redis)
-	consoleAuth *webuiAuthenticator
+	cipher      *security.Cipher    // nil without SECURITY__API_KEY_ENCRYPTION_KEY
+	keys        *auth.KeyService    // service-surface key auth (verify/throttle/reveal)
+	consoleAuth *auth.Authenticator // nil when webui.enabled=false
 }
 
 // schedulerStats is wired from main (SetSchedulerStats) so /api/stats can
@@ -156,15 +140,13 @@ func (r *Router) registerRoutes(e *gin.Engine) {
 	// (POST-redirect-GET + flash) + the /api/* JSON group below. Disabled
 	// entirely (pages + API) when webui.enabled=false.
 	if r.cfg.WebUI.Enabled {
-		auth := newWebuiAuthenticator(r.cfg.WebUI.Token, r.cfg.WebUI.SessionTTLMinutes, r.sessStore, nil)
-		r.consoleAuth = auth
-		r.registerPages(e, auth)
-		r.registerWebuiRoutes(e, r.cfg, auth)
+		r.registerPages(e, r.consoleAuth)
+		r.registerWebuiRoutes(e, r.cfg, r.consoleAuth)
 	}
 
 	// Bootstrap service keys (e.g. the APISIX consumer key) so gateway-routed
 	// calls pass the API-key middleware with no manual setup.
-	requireBootstrapKeys(r.cfg.Security.ServiceKeys)
+	auth.SeedBootstrapKeys(r.cfg.Security.ServiceKeys)
 
 	// Backfill UUID identifiers for rows created before the uuid columns
 	// existed (webui_user / secret legacy rows).
@@ -178,7 +160,7 @@ func (r *Router) registerRoutes(e *gin.Engine) {
 	// Service surface: every call must carry a valid API key. The gateway's
 	// key-auth only guards the APISIX hop — this middleware is the authority
 	// at the app-task port itself, so a direct connection cannot bypass it.
-	svc := e.Group("", r.apiKeyAuthMiddleware(r.keys))
+	svc := e.Group("", middleware.APIKeyAuth(r.keys, r.consoleAuth))
 
 	// Task endpoints: register / detail / list. A task is a pure scheduling
 	// definition (task_type + payload + executor_url + cron + retry + weight);
@@ -209,47 +191,4 @@ func (r *Router) registerRoutes(e *gin.Engine) {
 	svc.POST("/scripts", r.uploadScript)
 	svc.GET("/scripts", r.listScripts)
 	svc.GET("/scripts/logs", r.scriptLogs)
-}
-
-func corsMiddleware(allowOrigins []string) gin.HandlerFunc {
-	allowed := make(map[string]bool, len(allowOrigins))
-	for _, o := range allowOrigins {
-		allowed[o] = true
-	}
-	return func(c *gin.Context) {
-		origin := c.GetHeader("Origin")
-		if allowed[origin] {
-			c.Header("Access-Control-Allow-Origin", origin)
-			c.Header("Access-Control-Allow-Credentials", "true")
-			c.Header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-			// X-WebUI-Token/X-Operator are the console's own headers; without
-			// them here a cross-origin browser client fails CORS preflight.
-			c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-Id, X-WebUI-Token, X-Operator")
-			c.Header("Access-Control-Max-Age", "600")
-			// The origin is reflected, so caches must not share responses
-			// across origins.
-			c.Header("Vary", "Origin")
-		}
-		if c.Request.Method == http.MethodOptions {
-			c.AbortWithStatus(http.StatusNoContent)
-			return
-		}
-		c.Next()
-	}
-}
-
-// securityHeaders adds baseline hardening for the admin console: no framing
-// (clickjacking), no MIME sniffing, no referrer leakage, and no-store so
-// admin data never lands in shared caches.
-func securityHeaders() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.Header("X-Content-Type-Options", "nosniff")
-		c.Header("X-Frame-Options", "DENY")
-		c.Header("Content-Security-Policy", "frame-ancestors 'none'")
-		c.Header("Referrer-Policy", "no-referrer")
-		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
-			c.Header("Cache-Control", "no-store")
-		}
-		c.Next()
-	}
 }

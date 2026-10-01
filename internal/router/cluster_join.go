@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"app-task/internal/auth"
 	"app-task/internal/model"
 	"app-task/internal/repo"
 
@@ -96,7 +97,7 @@ func (r *Router) apiClusterJoin(c *gin.Context) {
 		via = "web"
 	}
 	operator := ""
-	if s, ok := currentUser(c); ok {
+	if s, ok := auth.CurrentUser(c); ok {
 		operator = s.Username
 	}
 	created, err := repo.JoinNode(&model.ClusterNode{

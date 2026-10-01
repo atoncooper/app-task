@@ -3,6 +3,9 @@ package router
 import (
 	"net/http"
 
+	"app-task/internal/dto"
+	"app-task/internal/router/middleware"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -16,23 +19,17 @@ import (
 // content (business side). Key-auth via APISIX.
 func (r *Router) sendEmail(c *gin.Context) {
 	if c.Request.ContentLength > maxEmailBodyBytes {
-		c.JSON(http.StatusBadRequest, gin.H{"detail": "request too large"})
+		middleware.RespondError(c, http.StatusBadRequest, "payload_too_large", "request too large")
 		return
 	}
-	var req struct {
-		To          []string `json:"to" binding:"required"`
-		CC          []string `json:"cc"`
-		Subject     string   `json:"subject" binding:"required,max=255"`
-		HTML        string   `json:"html" binding:"required"`
-		ReferenceID string   `json:"reference_id" binding:"max=64"`
-	}
+	var req dto.SendEmailRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request: " + err.Error()})
+		middleware.RespondError(c, http.StatusBadRequest, "invalid_request", "invalid request: "+err.Error())
 		return
 	}
 	emailID, err := r.emailSvc.Enqueue(req.To, req.CC, req.Subject, req.HTML, req.ReferenceID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
+		middleware.RespondError(c, http.StatusBadRequest, "enqueue_failed", err.Error())
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"email_id": emailID, "status": "queued"})

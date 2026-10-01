@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"app-task/internal/auth"
+	"app-task/internal/dto"
 	"app-task/internal/model"
 	"app-task/internal/repo"
 
@@ -189,11 +191,7 @@ func (r *Router) apiListCalendars(c *gin.Context) {
 }
 
 func (r *Router) apiUpsertCalendarDate(c *gin.Context) {
-	var req struct {
-		Name    string `json:"name"`
-		Date    string `json:"date"`
-		DayType string `json:"day_type"`
-	}
+	var req dto.UpsertCalendarDateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request: " + err.Error()})
 		return
@@ -221,13 +219,10 @@ func (r *Router) apiUpsertCalendarDate(c *gin.Context) {
 
 func (r *Router) apiCreateCalendar(c *gin.Context) {
 	operator := ""
-	if s, ok := currentUser(c); ok {
+	if s, ok := auth.CurrentUser(c); ok {
 		operator = s.Username
 	}
-	var req struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-	}
+	var req dto.CreateCalendarRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request: " + err.Error()})
 		return

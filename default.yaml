@@ -131,6 +131,11 @@ security:
   # Every non-console request to the service surface must carry one of the
   # accepted headers: X-API-Key / apikey / Authorization: Bearer.
   service_keys: []
+  # SSRF hardening: reject task registration whose executor_url targets
+  # loopback/private/link-local hosts (checked at register time, DNS-resolved,
+  # fail-closed). Default off — in-cluster executors are usually private.
+  # Env: APPTASK__SECURITY__EXECUTOR_BLOCK_PRIVATE_HOSTS=true
+  executor_block_private_hosts: false
 
 log:
   level: info       # debug|info|warn|error (APPTASK__LOG__LEVEL)

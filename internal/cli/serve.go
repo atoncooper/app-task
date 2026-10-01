@@ -123,6 +123,9 @@ func runServer(defaultYAML []byte) error {
 	// callbacks, plus a mail-delivery platform capability (executors post
 	// standardized emails, app-task queues + delivers with retries).
 	taskSvc := service.NewTaskService()
+	// SSRF hardening policy (off by default): task registration rejects
+	// executor_urls targeting loopback/private/link-local hosts.
+	taskSvc.BlockPrivateExecutorHosts = cfg.Security.BlockPrivateExecutorHosts
 	emailSvc := service.NewEmailService(cfg)
 	// notify: built-in task type that renders its payload and delivers via a
 	// channel — inline email, or a named notify_channel row (dingtalk/feishu/

@@ -223,6 +223,10 @@ func (ScriptRun) TableName() string { return "script_run" }
 // Scopes is a comma-separated subset of {tasks,scripts,internal} restricting
 // which service groups the key may call (empty = all, legacy/bootstrap rows).
 // RatePerMin caps requests per minute for the key (0 = unlimited).
+// UID binds the key to a single owner uid: calls with a bound key are forced
+// onto that uid regardless of the client-supplied X-Uid / body uid, closing
+// the "any key can read any uid" hole on direct connections. 0 = unbound —
+// the gateway-injected X-Uid is trusted (bootstrap/APISIX keys stay unbound).
 type APIKey struct {
 	ID         int64      `gorm:"primaryKey;autoIncrement" json:"-"`
 	KeyID      string     `gorm:"column:key_id;uniqueIndex;size:64;not null" json:"key_id"`
@@ -231,6 +235,7 @@ type APIKey struct {
 	KeyPrefix  string     `gorm:"column:key_prefix;size:16;not null" json:"key_prefix"`        // display only (first chars of the plaintext)
 	Scopes     string     `gorm:"column:scopes;size:64;not null;default:" json:"scopes"`       // tasks / scripts / internal (CSV)
 	RatePerMin int        `gorm:"column:rate_per_min;not null;default:0" json:"rate_per_min"`  // requests/min cap, 0 = unlimited
+	UID        int64      `gorm:"column:uid;not null;default:0" json:"uid"`                    // bound owner uid, 0 = trust X-Uid (gateway mode)
 	Status     string     `gorm:"column:status;size:16;default:active;not null" json:"status"` // active / revoked
 	CreatedBy  string     `gorm:"column:created_by;size:64" json:"created_by"`
 	LastUsedAt *time.Time `gorm:"column:last_used_at" json:"last_used_at,omitempty"`

@@ -7,23 +7,21 @@
 package router
 
 import (
-	"crypto/rand"
-	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
 	"time"
 
+	"app-task/internal/auth"
 	"app-task/internal/config"
+	"app-task/internal/dto"
 	"app-task/internal/model"
 	"app-task/internal/repo"
 	"app-task/internal/service"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"golang.org/x/crypto/bcrypt"
 	"gorm.io/datatypes"
 )
 
@@ -36,47 +34,22 @@ var webuiVersion = "0.12.0"
 // Version is the exported service version (CLI `--version` / `at info`).
 var Version = webuiVersion
 
-const (
-	// Brute-force throttle: max failed credentials per client IP per window,
-	// shared by the login endpoint and the /api/* gate so the limit cannot be
-	// bypassed by hammering any other endpoint.
-	webuiMaxFails     = 10
-	webuiFailWindow   = time.Minute
-	webuiDefaultTTL   = 12 * time.Hour
-	webuiSessionBytes = 32
-
-	// Browser sessions ride an HttpOnly cookie so the server can gate the
-	// console PAGE itself (redirect to /login before any app HTML is sent);
-	// programmatic clients use the session id / master token via headers.
-	webuiSessionCookie = "apptask_session"
-	webuiCtxUser       = "webui_user" // gin context key for the authed identity
-)
-
-// webuiSession is the identity attached to a browser/API session: it always
-// carries a username and role so handlers can authorize and audit.
-type webuiSession struct {
-	UserID   string // UUID of the webui_user row ("" for master-token sessions)
-	Username string
-	Role     string // admin / member
-	Expiry   time.Time
-}
-
 // registerWebuiRoutes mounts the admin API behind the auth gate. The console
 // ALWAYS requires login (a default admin account is seeded at startup), so the
 // gate is unconditional; webui.enabled=false disables the whole console.
-func (r *Router) registerWebuiRoutes(e *gin.Engine, cfg *config.Config, auth *webuiAuthenticator) {
+func (r *Router) registerWebuiRoutes(e *gin.Engine, cfg *config.Config, authr *auth.Authenticator) {
 	// Login/logout sit OUTSIDE the gate: login must be reachable without
 	// credentials (it IS the credential check), and logout authenticates with
 	// the very session it invalidates.
-	e.POST("/api/login", auth.login)
-	e.POST("/api/logout", auth.logout)
+	e.POST("/api/login", authr.Login)
+	e.POST("/api/logout", authr.Logout)
 
-	api := e.Group("/api", auth.middleware())
+	api := e.Group("/api", authr.Middleware())
 	api.GET("/info", r.apiInfo)
 	api.GET("/stats", r.apiStats)
 
-	api.GET("/cluster", requireAdmin(), r.apiCluster)
-	api.POST("/cluster/join", requireAdmin(), r.apiClusterJoin)
+	api.GET("/cluster", auth.RequireAdmin(), r.apiCluster)
+	api.POST("/cluster/join", auth.RequireAdmin(), r.apiClusterJoin)
 
 	api.GET("/tasks", r.apiListTasks)
 	api.GET("/tasks/:task_id", r.apiTaskDetail)
@@ -88,14 +61,14 @@ func (r *Router) registerWebuiRoutes(e *gin.Engine, cfg *config.Config, auth *we
 	api.POST("/emails/:email_id/retry", r.apiRetryEmail)
 
 	// Notify channels (admin): CLI surface for the console's channel roster.
-	channels := api.Group("/channels", requireAdmin())
+	channels := api.Group("/channels", auth.RequireAdmin())
 	channels.GET("", r.apiListChannels)
 	channels.POST("", r.apiUpsertChannel)
 	channels.DELETE("/:name", r.apiDeleteChannel)
 	channels.POST("/:name/test", r.apiTestChannel)
 
 	// Business calendars (admin): CLI surface for holiday/adjustment dates.
-	calendarAPI := api.Group("/calendars", requireAdmin())
+	calendarAPI := api.Group("/calendars", auth.RequireAdmin())
 	calendarAPI.GET("", r.apiListCalendars)
 	calendarAPI.POST("", r.apiCreateCalendar)
 	calendarAPI.POST("/dates", r.apiUpsertCalendarDate)
@@ -107,248 +80,18 @@ func (r *Router) registerWebuiRoutes(e *gin.Engine, cfg *config.Config, auth *we
 	api.POST("/scripts/:script_id/toggle", r.apiToggleScript)
 
 	// Account management: admin-only.
-	users := api.Group("/users", requireAdmin())
+	users := api.Group("/users", auth.RequireAdmin())
 	users.GET("", r.apiListUsers)
 	users.POST("", r.apiCreateUser)
 	users.POST("/:user_id/password", r.apiSetUserPassword)
 	users.DELETE("/:user_id", r.apiDeleteUser)
 }
 
-// webuiAuthenticator gates the admin console. Two credential kinds are
-// accepted, both presented via X-WebUI-Token / Authorization: Bearer:
-//   - user sessions issued by POST /api/login (username + password), stored in
-//     an HttpOnly cookie for the browser and/or a session id for API clients;
-//   - the optional master token (webui.token, constant-time compare) as an
-//     API-key fallback for scripts — it authenticates as admin.
-//
-// Failed attempts are throttled per client IP across ALL /api/* endpoints.
-type webuiAuthenticator struct {
-	masterToken string
-	ttl         time.Duration
-
-	// Backing stores: memory by default (single instance), Redis for
-	// multi-instance console deployments (see state_stores.go / config).
-	sessions sessionStore
-	throttle throttler
-}
-
-func newWebuiAuthenticator(token string, ttlMinutes int, sessions sessionStore, throttle throttler) *webuiAuthenticator {
-	ttl := webuiDefaultTTL
-	if ttlMinutes > 0 {
-		ttl = time.Duration(ttlMinutes) * time.Minute
-	}
-	if sessions == nil {
-		sessions = newMemorySessionStore()
-	}
-	if throttle == nil {
-		throttle = newMemoryThrottler(webuiMaxFails, webuiFailWindow)
-	}
-	return &webuiAuthenticator{
-		masterToken: token,
-		ttl:         ttl,
-		sessions:    sessions,
-		throttle:    throttle,
-	}
-}
-
-// middleware gates /api/* on a valid credential and stashes the identity for
-// downstream handlers. Any failed check counts toward the per-IP throttle; a
-// success clears it.
-func (a *webuiAuthenticator) middleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		ip := c.ClientIP()
-		if !a.allow(ip) {
-			a.throttleAbort(c)
-			return
-		}
-		sess, ok := a.authenticate(a.extractToken(c))
-		if !ok {
-			a.fail(ip)
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"detail": "unauthorized (login required)"})
-			return
-		}
-		a.reset(ip)
-		c.Set(webuiCtxUser, sess)
-		c.Next()
-	}
-}
-
-// login exchanges credentials for a fresh session. Accepts either a username +
-// password (console login) or the master token (script/API fallback). The
-// session is issued BOTH as an HttpOnly+SameSite=Strict cookie (browser flow)
-// and in the JSON body (API flow, presented via X-WebUI-Token / Bearer).
-func (a *webuiAuthenticator) login(c *gin.Context) {
-	var req struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-		Token    string `json:"token"`
-	}
-	_ = c.ShouldBindJSON(&req)
-	ip := c.ClientIP()
-	if !a.allow(ip) {
-		a.throttleAbort(c)
-		return
-	}
-
-	var sess webuiSession
-	var ok bool
-	switch {
-	case req.Username != "" && req.Password != "":
-		sess, ok = a.verifyUser(req.Username, req.Password)
-	case req.Token != "":
-		sess, ok = a.authenticate(req.Token)
-	default:
-		// Empty credentials are a fresh visitor, not an attack: reject
-		// without burning the throttle budget.
-		c.JSON(http.StatusUnauthorized, gin.H{"detail": "username/password or token required"})
-		return
-	}
-	if !ok {
-		a.fail(ip)
-		c.JSON(http.StatusUnauthorized, gin.H{"detail": "invalid credentials"})
-		return
-	}
-	a.reset(ip)
-
-	sid, err := a.newSession(sess)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": "issue session failed"})
-		return
-	}
-	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     webuiSessionCookie,
-		Value:    sid,
-		Path:     "/",
-		MaxAge:   int(a.ttl.Seconds()),
-		HttpOnly: true,                    // JS can never read it (XSS-proof storage)
-		SameSite: http.SameSiteStrictMode, // cross-site requests never carry it (CSRF)
-		Secure:   c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https",
-	})
-	c.JSON(http.StatusOK, gin.H{
-		"ok":                 true,
-		"session":            sid,
-		"expires_in_minutes": int(a.ttl.Minutes()),
-		"user":               gin.H{"username": sess.Username, "role": sess.Role, "is_admin": sess.Role == "admin"},
-	})
-}
-
-// logout invalidates the presented session and clears the session cookie.
-func (a *webuiAuthenticator) logout(c *gin.Context) {
-	if tok := a.extractToken(c); tok != "" {
-		a.sessions.delete(tok)
-	}
-	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     webuiSessionCookie,
-		Value:    "",
-		Path:     "/",
-		MaxAge:   -1,
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
-	})
-	c.JSON(http.StatusOK, gin.H{"ok": true})
-}
-
-func (a *webuiAuthenticator) throttleAbort(c *gin.Context) {
-	c.Header("Retry-After", strconv.Itoa(int(webuiFailWindow.Seconds())))
-	c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-		"detail": "too many failed attempts, retry after the cooldown",
-	})
-}
-
-// extractToken finds the presented credential: X-WebUI-Token header, Bearer
-// token, or the session cookie (browser navigation requests can only carry
-// the cookie, which is what enables the server-side page gate).
-func (a *webuiAuthenticator) extractToken(c *gin.Context) string {
-	got := c.GetHeader("X-WebUI-Token")
-	if got == "" {
-		if b := c.GetHeader("Authorization"); len(b) > 7 && b[:7] == "Bearer " {
-			got = b[7:]
-		}
-	}
-	if got == "" {
-		got, _ = c.Cookie(webuiSessionCookie)
-	}
-	return got
-}
-
-// authenticate resolves a credential (session id or master token) to an
-// identity. The master token is compared in constant time and maps to an admin
-// identity so scripts can call /api/* without a user session.
-func (a *webuiAuthenticator) authenticate(cred string) (webuiSession, bool) {
-	if cred == "" {
-		return webuiSession{}, false
-	}
-	if a.masterToken != "" && subtle.ConstantTimeCompare([]byte(cred), []byte(a.masterToken)) == 1 {
-		return webuiSession{Username: "master-token", Role: "admin", Expiry: time.Now().Add(a.ttl)}, true
-	}
-	return a.sessions.load(cred)
-}
-
-// verifyUser checks a username + password against the webui_user store.
-func (a *webuiAuthenticator) verifyUser(username, password string) (webuiSession, bool) {
-	u, err := repo.GetUserByUsername(username)
-	if err != nil || u == nil {
-		return webuiSession{}, false
-	}
-	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)) != nil {
-		return webuiSession{}, false
-	}
-	return webuiSession{UserID: u.UserID, Username: u.Username, Role: u.Role, Expiry: time.Now().Add(a.ttl)}, true
-}
-
-func (a *webuiAuthenticator) newSession(user webuiSession) (string, error) {
-	b := make([]byte, webuiSessionBytes)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	sid := hex.EncodeToString(b)
-	if err := a.sessions.save(sid, user, a.ttl); err != nil {
-		return "", err
-	}
-	return sid, nil
-}
-
-func (a *webuiAuthenticator) allow(ip string) bool { return a.throttle.allow(ip) }
-
-func (a *webuiAuthenticator) fail(ip string) { a.throttle.fail(ip) }
-
-func (a *webuiAuthenticator) reset(ip string) { a.throttle.reset(ip) }
-
-// currentUser reads the authed identity set by the auth middleware.
-func currentUser(c *gin.Context) (webuiSession, bool) {
-	v, ok := c.Get(webuiCtxUser)
-	if !ok {
-		return webuiSession{}, false
-	}
-	s, ok := v.(webuiSession)
-	return s, ok
-}
-
-// operatorOf returns the authed username for audit logging (empty for master
-// token / header-only callers).
-func operatorOf(c *gin.Context) string {
-	if s, ok := currentUser(c); ok && s.Username != "" {
-		return s.Username
-	}
-	return ""
-}
-
-// requireAdmin gates a route group to role=admin.
-func requireAdmin() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if s, ok := currentUser(c); ok && s.Role == "admin" {
-			c.Next()
-			return
-		}
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"detail": "admin role required"})
-	}
-}
-
 // ── info / stats ────────────────────────────────────────────────────
 
 func (r *Router) apiInfo(c *gin.Context) {
 	out := gin.H{"service": "app-task", "version": webuiVersion, "status": "running"}
-	if s, ok := currentUser(c); ok {
+	if s, ok := auth.CurrentUser(c); ok {
 		out["user"] = gin.H{"username": s.Username, "role": s.Role, "is_admin": s.Role == "admin"}
 	}
 	c.JSON(http.StatusOK, out)
@@ -449,21 +192,7 @@ func (r *Router) apiTaskDetail(c *gin.Context) {
 // attributes the task to the logged-in console user's own id; master-token
 // sessions (no user row) and explicit uids pass through unchanged.
 func (r *Router) apiCreateTask(c *gin.Context) {
-	var req struct {
-		UID          int64           `json:"uid"`
-		TaskType     string          `json:"task_type"`
-		Payload      json.RawMessage `json:"payload"`
-		ExecutorURL  string          `json:"executor_url"`
-		Async        bool            `json:"async"`
-		CronExpr     string          `json:"cron_expr"`
-		TriggerTime  string          `json:"trigger_time"`
-		MaxRetry     int             `json:"max_retry"`
-		Weight       int             `json:"weight"`
-		Shard        bool            `json:"shard"`
-		ShardTotal   int             `json:"shard_total"`
-		CalendarID   string          `json:"calendar_id"`
-		AlertChannel string          `json:"alert_channel"`
-	}
+	var req dto.AdminCreateTaskRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request: " + err.Error()})
 		return
@@ -676,7 +405,7 @@ func (r *Router) apiScriptDetail(c *gin.Context) {
 }
 
 func (r *Router) apiCreateScript(c *gin.Context) {
-	var req scriptUploadBody
+	var req dto.ScriptUploadRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request: " + err.Error()})
 		return
@@ -693,10 +422,7 @@ func (r *Router) apiCreateScript(c *gin.Context) {
 // creating a new version; every change is audit-logged.
 func (r *Router) apiToggleScript(c *gin.Context) {
 	scriptID := c.Param("script_id")
-	var req struct {
-		Enabled  bool   `json:"enabled"`
-		Operator string `json:"operator" binding:"max=64"`
-	}
+	var req dto.ToggleScriptRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request: " + err.Error()})
 		return
@@ -719,7 +445,7 @@ func (r *Router) apiToggleScript(c *gin.Context) {
 		operator = c.GetHeader("X-Operator")
 	}
 	if operator == "" {
-		operator = operatorOf(c)
+		operator = auth.OperatorOf(c)
 	}
 	state := "enabled"
 	if !req.Enabled {
@@ -760,11 +486,7 @@ func (r *Router) apiListUsers(c *gin.Context) {
 }
 
 func (r *Router) apiCreateUser(c *gin.Context) {
-	var req struct {
-		Username string `json:"username" binding:"required,min=2,max=64"`
-		Password string `json:"password" binding:"required,min=8,max=128"`
-		Role     string `json:"role"`
-	}
+	var req dto.CreateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request: " + err.Error()})
 		return
@@ -794,9 +516,7 @@ func (r *Router) apiSetUserPassword(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"detail": err.Error()})
 		return
 	}
-	var req struct {
-		Password string `json:"password" binding:"required,min=8,max=128"`
-	}
+	var req dto.SetUserPasswordRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request: " + err.Error()})
 		return
@@ -814,7 +534,7 @@ func (r *Router) apiDeleteUser(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"detail": err.Error()})
 		return
 	}
-	me, ok := currentUser(c)
+	me, ok := auth.CurrentUser(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"detail": "unauthorized"})
 		return

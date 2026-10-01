@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"app-task/internal/auth"
 	"app-task/internal/config"
 	"app-task/internal/db"
 	"app-task/internal/executor"
@@ -78,13 +79,13 @@ func adminHeaders(t *testing.T, h http.Handler) map[string]string {
 	if sid == "" {
 		t.Fatal("admin login returned no session cookie")
 	}
-	return map[string]string{"Cookie": webuiSessionCookie + "=" + sid}
+	return map[string]string{"Cookie": auth.SessionCookieName + "=" + sid}
 }
 
 // sessionFromCookie extracts the session id from a login Set-Cookie header.
 func sessionFromCookie(w *httptest.ResponseRecorder) string {
 	ck := w.Header().Get("Set-Cookie")
-	prefix := webuiSessionCookie + "="
+	prefix := auth.SessionCookieName + "="
 	i := bytes.Index([]byte(ck), []byte(prefix))
 	if i < 0 {
 		return ""
@@ -226,7 +227,7 @@ func TestWebUIUserAdmin(t *testing.T) {
 	// member logs in, is NOT admin, cannot manage users.
 	authz := map[string]string{}
 	mw := doJSON(h, "POST", "/api/login", `{"username":"zhang","password":"member-pass-1"}`, nil)
-	authz["Cookie"] = webuiSessionCookie + "=" + sessionFromCookie(mw)
+	authz["Cookie"] = auth.SessionCookieName + "=" + sessionFromCookie(mw)
 	w = doJSON(h, "GET", "/api/stats", "", authz)
 	if w.Code != http.StatusOK {
 		t.Fatalf("member stats: status = %d", w.Code)

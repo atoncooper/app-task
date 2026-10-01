@@ -4,9 +4,12 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/url"
 	"time"
 
 	"app-task/internal/model"
@@ -19,7 +22,17 @@ import (
 )
 
 // TaskService handles task registration and async completion callbacks.
-type TaskService struct{}
+// BlockPrivateExecutorHosts turns on the SSRF hardening: registrations whose
+// executor_url targets loopback/private/link-local hosts are rejected
+// (deployment policy, off by default — in-cluster executors are private).
+type TaskService struct {
+	BlockPrivateExecutorHosts bool
+}
+
+// ErrInvalidExecutorURL marks registration rejections caused by executor_url
+// validation (scheme whitelist / private-host blocking); callers map it to
+// their transport's specific error shape via errors.Is.
+var ErrInvalidExecutorURL = errors.New("invalid executor_url")
 
 func NewTaskService() *TaskService {
 	return &TaskService{}
@@ -62,6 +75,15 @@ func (s *TaskService) RegisterTask(o RegisterOptions) (string, error) {
 	taskType := o.TaskType
 	if taskType == "" {
 		taskType = "http"
+	}
+	// executor_url contract: absolute http/https URLs only; with the SSRF
+	// hardening on, private/loopback targets are rejected (DNS-resolved,
+	// fail-closed). Both surfaces (service API + admin console) funnel
+	// through here, so the invariant holds no matter the caller.
+	if o.ExecutorURL != "" {
+		if err := validateExecutorURL(o.ExecutorURL, s.BlockPrivateExecutorHosts); err != nil {
+			return "", fmt.Errorf("%w: %v", ErrInvalidExecutorURL, err)
+		}
 	}
 	weight := o.Weight
 	if weight <= 0 {
@@ -178,4 +200,56 @@ func (s *TaskService) CompleteTask(taskID, status, result, errMsg string) (strin
 	})
 	slog.Info("[JOB] completed via callback", "task_id", taskID, "status", toStatus)
 	return toStatus, nil
+}
+
+// validateExecutorURL enforces the executor_url contract for http tasks:
+// absolute http/https URLs only. With blockPrivate set
+// (security.executor_block_private_hosts) hosts resolving into
+// loopback/private/link-local ranges are rejected, blunting SSRF probes of
+// the internal network at registration time. Hostname resolution is
+// fail-closed with a short timeout - a host that does not resolve now will
+// not resolve at dispatch either. DNS rebinding between check and dispatch
+// remains possible; the deployment boundary note in docs/api.md covers it.
+func validateExecutorURL(raw string, blockPrivate bool) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("executor_url unparseable: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("executor_url scheme must be http or https")
+	}
+	if u.Host == "" {
+		return fmt.Errorf("executor_url host is required")
+	}
+	if !blockPrivate {
+		return nil
+	}
+	host := u.Hostname()
+	if ip := net.ParseIP(host); ip != nil {
+		if isBlockedIP(ip) {
+			return fmt.Errorf("executor_url host %s is a private/loopback address "+
+				"(blocked by security.executor_block_private_hosts)", host)
+		}
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil || len(addrs) == 0 {
+		return fmt.Errorf("executor_url host %s does not resolve", host)
+	}
+	for _, a := range addrs {
+		if isBlockedIP(a.IP) {
+			return fmt.Errorf("executor_url host %s resolves to a private/loopback address "+
+				"(blocked by security.executor_block_private_hosts)", host)
+		}
+	}
+	return nil
+}
+
+// isBlockedIP reports whether the address falls in a range tasks must not
+// target when private-host blocking is enabled.
+func isBlockedIP(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsUnspecified()
 }

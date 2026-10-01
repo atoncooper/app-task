@@ -8,13 +8,14 @@ import (
 	"log/slog"
 	"net/http"
 
+	"app-task/internal/auth"
 	"app-task/internal/repo"
 
 	"github.com/gin-gonic/gin"
 )
 
 func (r *Router) pagePasswordSelf(c *gin.Context) {
-	s, ok := currentUser(c)
+	s, ok := auth.CurrentUser(c)
 	if !ok {
 		c.Redirect(http.StatusFound, "/login")
 		return
@@ -29,7 +30,7 @@ func (r *Router) pagePasswordSelf(c *gin.Context) {
 }
 
 func (r *Router) handlePasswordSelf(c *gin.Context) {
-	s, ok := currentUser(c)
+	s, ok := auth.CurrentUser(c)
 	if !ok {
 		c.Redirect(http.StatusFound, "/login")
 		return
@@ -39,7 +40,7 @@ func (r *Router) handlePasswordSelf(c *gin.Context) {
 	newPwd := c.PostForm("new_password")
 	newPwd2 := c.PostForm("new_password2")
 
-	if _, ok := r.consoleAuth.verifyUser(s.Username, oldPwd); !ok {
+	if _, ok := r.consoleAuth.VerifyUser(s.Username, oldPwd); !ok {
 		redirectFlash(c, back, "err", "当前密码不正确")
 		return
 	}

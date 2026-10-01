@@ -1,53 +1,60 @@
 package router
 
 import (
-	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"app-task/internal/auth"
+	"app-task/internal/dto"
 	"app-task/internal/repo"
+	"app-task/internal/router/middleware"
 	"app-task/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
 
+// resolveUID returns the effective owner uid for a request. A uid bound to
+// the presented API key always wins; unbound keys (bootstrap/gateway) and
+// console-session callers fall back to the client-supplied X-Uid header.
+func resolveUID(c *gin.Context) (int64, bool) {
+	if uid, ok := auth.BoundUID(c); ok {
+		return uid, true
+	}
+	return uidFromHeader(c)
+}
+
 // register creates a pure scheduling task. The scheduler never interprets the
 // payload — it is passed verbatim to the executor.
 func (r *Router) register(c *gin.Context) {
 	if c.Request.ContentLength > maxTaskPayloadBytes {
-		c.JSON(http.StatusBadRequest, gin.H{"detail": "payload too large"})
+		middleware.RespondError(c, http.StatusBadRequest, "payload_too_large", "payload too large")
 		return
 	}
-	var req struct {
-		UID          int64           `json:"uid" binding:"required"`
-		TaskType     string          `json:"task_type"`    // http (default) / lua / notify
-		Payload      json.RawMessage `json:"payload"`      // opaque task parameters
-		ExecutorURL  string          `json:"executor_url"` // http mode: third-party executor endpoint
-		Async        bool            `json:"async"`        // true: executor replies 202 + callback
-		CronExpr     string          `json:"cron_expr"`    // 5-field cron; empty = one-shot
-		TriggerTime  string          `json:"trigger_time"` // required when cron_expr is empty
-		MaxRetry     int             `json:"max_retry"`
-		Weight       int             `json:"weight"`
-		Shard        bool            `json:"shard"`         // 分片广播模式
-		ShardTotal   int             `json:"shard_total"`   // 0 = 按存活节点数
-		CalendarID   string          `json:"calendar_id"`   // 业务日历（cron 任务生效）
-		AlertChannel string          `json:"alert_channel"` // 最终失败告警渠道（notify 渠道名）
-	}
+	var req dto.RegisterTaskRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request: " + err.Error()})
+		middleware.RespondError(c, http.StatusBadRequest, "invalid_request", "invalid request: "+err.Error())
+		return
+	}
+	// Key-bound uid wins: a uid-pinned key may only register for its own uid.
+	if bound, ok := auth.BoundUID(c); ok && bound != req.UID {
+		middleware.RespondError(c, http.StatusForbidden, "forbidden",
+			"task uid does not match the uid bound to the API key")
 		return
 	}
 	var triggerTime time.Time
 	if req.CronExpr == "" && req.TriggerTime == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"detail": "trigger_time required when cron_expr is empty"})
+		middleware.RespondError(c, http.StatusBadRequest, "invalid_request",
+			"trigger_time required when cron_expr is empty")
 		return
 	}
 	if req.TriggerTime != "" {
 		t, err := parseISO8601(req.TriggerTime)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid trigger_time (expect ISO8601)"})
+			middleware.RespondError(c, http.StatusBadRequest, "invalid_trigger_time",
+				"invalid trigger_time (expect ISO8601)")
 			return
 		}
 		triggerTime = t
@@ -59,30 +66,35 @@ func (r *Router) register(c *gin.Context) {
 		CalendarID: req.CalendarID, AlertChannel: req.AlertChannel,
 	})
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"detail": "register failed: " + err.Error()})
+		if errors.Is(err, service.ErrInvalidExecutorURL) {
+			middleware.RespondError(c, http.StatusBadRequest, "invalid_executor_url", err.Error())
+			return
+		}
+		middleware.RespondError(c, http.StatusBadRequest, "register_failed", "register failed: "+err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"task_id": taskID, "status": "pending"})
+	c.Header("Location", "/tasks/"+taskID)
+	c.JSON(http.StatusCreated, gin.H{"task_id": taskID, "status": "pending"})
 }
 
 // detail returns a task plus its recent execution log (溯源).
 func (r *Router) detail(c *gin.Context) {
-	uid, ok := uidFromHeader(c)
+	uid, ok := resolveUID(c)
 	if !ok {
 		return
 	}
 	taskID := c.Param("task_id")
 	task, err := repo.GetTaskByID(taskID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		middleware.RespondError(c, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	if task == nil {
-		c.JSON(http.StatusNotFound, gin.H{"detail": "task not found"})
+		middleware.RespondError(c, http.StatusNotFound, "task_not_found", "task not found")
 		return
 	}
 	if task.UID != uid {
-		c.JSON(http.StatusForbidden, gin.H{"detail": "not the task owner"})
+		middleware.RespondError(c, http.StatusForbidden, "forbidden", "not the task owner")
 		return
 	}
 	logs, _ := repo.ListTaskLogs(taskID, 10)
@@ -116,13 +128,39 @@ func (r *Router) detail(c *gin.Context) {
 
 // list returns the user's tasks, newest first.
 func (r *Router) list(c *gin.Context) {
-	uid, ok := uidFromHeader(c)
+	uid, ok := resolveUID(c)
 	if !ok {
 		return
 	}
-	tasks, err := repo.ListTasksByUID(uid, 50, 0)
+	limit := 50
+	if v := c.Query("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > maxListLimit {
+			middleware.RespondError(c, http.StatusBadRequest, "invalid_request",
+				"limit must be an integer in 1.."+strconv.Itoa(maxListLimit))
+			return
+		}
+		limit = n
+	}
+	offset := 0
+	if v := c.Query("offset"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			middleware.RespondError(c, http.StatusBadRequest, "invalid_request",
+				"offset must be a non-negative integer")
+			return
+		}
+		offset = n
+	}
+	status := strings.TrimSpace(c.Query("status"))
+	if status != "" && !validTaskStatuses[status] {
+		middleware.RespondError(c, http.StatusBadRequest, "invalid_request",
+			"status must be one of: pending, dispatching, running, completed, failed")
+		return
+	}
+	tasks, total, err := repo.ListTasksByUID(uid, status, limit, offset)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		middleware.RespondError(c, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	out := make([]gin.H, 0, len(tasks))
@@ -139,21 +177,28 @@ func (r *Router) list(c *gin.Context) {
 			"payload": j.Payload,
 		})
 	}
-	c.JSON(http.StatusOK, gin.H{"tasks": out})
+	c.JSON(http.StatusOK, gin.H{"tasks": out, "total": total, "limit": limit, "offset": offset})
 }
 
 func uidFromHeader(c *gin.Context) (int64, bool) {
 	s := c.GetHeader("X-Uid")
 	if s == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"detail": "unauthorized (X-Uid missing)"})
+		middleware.RespondError(c, http.StatusUnauthorized, "unauthorized", "unauthorized (X-Uid missing)")
 		return 0, false
 	}
 	uid, err := strconv.ParseInt(s, 10, 64)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"detail": "invalid X-Uid"})
+		middleware.RespondError(c, http.StatusUnauthorized, "unauthorized", "invalid X-Uid")
 		return 0, false
 	}
 	return uid, true
+}
+
+// validTaskStatuses is the closed set accepted by the list endpoint's status
+// filter (mirrors the scheduler's state machine, repo/task.go).
+var validTaskStatuses = map[string]bool{
+	"pending": true, "dispatching": true, "running": true,
+	"completed": true, "failed": true,
 }
 
 func parseISO8601(s string) (time.Time, error) {

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"app-task/internal/auth"
 	"app-task/internal/config"
 	"app-task/internal/executor"
 	"app-task/internal/service"
@@ -64,7 +65,7 @@ func TestWebuiLoginSessionFlow(t *testing.T) {
 		t.Fatalf("login response: %s", w.Body.String())
 	}
 	cookie := w.Header().Get("Set-Cookie")
-	if !bytes.Contains([]byte(cookie), []byte(webuiSessionCookie+"="+loginResp.Session)) ||
+	if !bytes.Contains([]byte(cookie), []byte(auth.SessionCookieName+"="+loginResp.Session)) ||
 		!bytes.Contains([]byte(cookie), []byte("HttpOnly")) ||
 		!bytes.Contains([]byte(cookie), []byte("SameSite=Strict")) {
 		t.Fatalf("login Set-Cookie malformed: %q", cookie)
@@ -77,12 +78,12 @@ func TestWebuiLoginSessionFlow(t *testing.T) {
 	if w := doJSON(h, "GET", "/api/stats", "", map[string]string{"Authorization": "Bearer " + loginResp.Session}); w.Code != http.StatusOK {
 		t.Fatalf("stats with bearer session: got %d, want 200", w.Code)
 	}
-	if w := doJSON(h, "GET", "/api/stats", "", map[string]string{"Cookie": webuiSessionCookie + "=" + loginResp.Session}); w.Code != http.StatusOK {
+	if w := doJSON(h, "GET", "/api/stats", "", map[string]string{"Cookie": auth.SessionCookieName + "=" + loginResp.Session}); w.Code != http.StatusOK {
 		t.Fatalf("stats with session cookie: got %d, want 200", w.Code)
 	}
 
 	// Logout invalidates the session and clears the cookie.
-	lo := doJSON(h, "POST", "/api/logout", "{}", map[string]string{"Cookie": webuiSessionCookie + "=" + loginResp.Session})
+	lo := doJSON(h, "POST", "/api/logout", "{}", map[string]string{"Cookie": auth.SessionCookieName + "=" + loginResp.Session})
 	if lo.Code != http.StatusOK {
 		t.Fatalf("logout: got %d, want 200", lo.Code)
 	}
@@ -162,7 +163,7 @@ func TestWebuiLoginThrottle(t *testing.T) {
 	h := newWebUITestRouter(t, "")
 
 	// Exhaust the per-IP budget with failed logins...
-	for i := 0; i < webuiMaxFails; i++ {
+	for i := 0; i < 10; i++ { // webuiMaxFails (auth pkg, unexported)
 		if w := doJSON(h, "POST", "/api/login", `{"username":"admin","password":"wrong"}`, nil); w.Code != http.StatusUnauthorized {
 			t.Fatalf("failed login %d: got %d, want 401", i, w.Code)
 		}
@@ -182,7 +183,7 @@ func TestWebuiLoginThrottle(t *testing.T) {
 func adminHeadersIfOK(t *testing.T, h http.Handler) map[string]string {
 	t.Helper()
 	w := doJSON(h, "POST", "/api/login", `{"username":"admin","password":"app-task-admin"}`, nil)
-	return map[string]string{"Cookie": webuiSessionCookie + "=" + sessionFromCookie(w)}
+	return map[string]string{"Cookie": auth.SessionCookieName + "=" + sessionFromCookie(w)}
 }
 
 // ── CORS + security headers ────────────────────────────────────────

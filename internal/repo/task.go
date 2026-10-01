@@ -27,11 +27,21 @@ func GetTaskByID(taskID string) (*model.Task, error) {
 	return &j, err
 }
 
-func ListTasksByUID(uid int64, limit, offset int) ([]model.Task, error) {
+// ListTasksByUID returns one uid's tasks newest-first with optional status
+// filter (empty = all statuses), plus the unfiltered total so callers can
+// paginate (limit/offset are applied after filtering).
+func ListTasksByUID(uid int64, status string, limit, offset int) ([]model.Task, int64, error) {
+	q := db.DB.Model(&model.Task{}).Where("uid = ?", uid)
+	if status != "" {
+		q = q.Where("status = ?", status)
+	}
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
 	var tasks []model.Task
-	err := db.DB.Where("uid = ?", uid).Order("created_at DESC").
-		Limit(limit).Offset(offset).Find(&tasks).Error
-	return tasks, err
+	err := q.Order("created_at DESC").Limit(limit).Offset(offset).Find(&tasks).Error
+	return tasks, total, err
 }
 
 // ListAllTasks returns tasks across all users, newest first (admin console).

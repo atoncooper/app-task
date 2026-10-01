@@ -42,6 +42,13 @@ func setupRouterTestDB(t *testing.T) {
 
 func newTestRouter(t *testing.T) (*service.TaskService, http.Handler) {
 	t.Helper()
+	return newTestRouterWithCfg(t, nil)
+}
+
+// newTestRouterWithCfg is newTestRouter with a config mutation hook (e.g.
+// flipping Security.BlockPrivateExecutorHosts for SSRF-hardening tests).
+func newTestRouterWithCfg(t *testing.T, mutate func(*config.Config)) (*service.TaskService, http.Handler) {
+	t.Helper()
 	setupRouterTestDB(t)
 	taskSvc := service.NewTaskService()
 	cfg := &config.Config{}
@@ -53,6 +60,10 @@ func newTestRouter(t *testing.T) (*service.TaskService, http.Handler) {
 	cfg.Notification.RetryBackoffBase = 2
 	cfg.Email.From = "MindBase <onboarding@resend.dev>"
 	cfg.WebUI.Enabled = true
+	if mutate != nil {
+		mutate(cfg)
+		taskSvc.BlockPrivateExecutorHosts = cfg.Security.BlockPrivateExecutorHosts
+	}
 	luaExec := executor.NewLuaExecutor(executor.LuaOptions{})
 	emailSvc := service.NewEmailService(cfg)
 	return taskSvc, New(taskSvc, emailSvc, nil, nil, luaExec, cfg)
@@ -83,7 +94,7 @@ func TestTasksRegister(t *testing.T) {
 	req.Header.Set("apikey", testServiceKey)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
+	if w.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 	var resp struct {

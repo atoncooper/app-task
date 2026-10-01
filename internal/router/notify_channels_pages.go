@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 
+	"app-task/internal/auth"
+	"app-task/internal/dto"
 	"app-task/internal/model"
 	"app-task/internal/repo"
 
@@ -278,14 +280,10 @@ func (r *Router) apiListChannels(c *gin.Context) {
 
 func (r *Router) apiUpsertChannel(c *gin.Context) {
 	operator := ""
-	if s, ok := currentUser(c); ok {
+	if s, ok := auth.CurrentUser(c); ok {
 		operator = s.Username
 	}
-	var req struct {
-		Name   string `json:"name"`
-		Type   string `json:"type"`
-		Config string `json:"config"`
-	}
+	var req dto.UpsertChannelRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request: " + err.Error()})
 		return

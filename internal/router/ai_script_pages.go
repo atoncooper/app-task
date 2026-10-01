@@ -4,6 +4,7 @@ package router
 // 生成失败 400 带原因（编辑器展示给用户）。
 
 import (
+	"app-task/internal/dto"
 	"net/http"
 	"strings"
 
@@ -19,9 +20,7 @@ func (r *Router) handleScriptAIGenerate(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"detail": "AI 未启用（ai.model / ai.api_key 未配置）"})
 		return
 	}
-	var req struct {
-		Requirement string `json:"requirement"`
-	}
+	var req dto.AIGenerateScriptRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request: " + err.Error()})
 		return

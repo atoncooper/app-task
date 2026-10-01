@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"app-task/internal/auth"
 	"app-task/internal/repo"
 )
 
@@ -23,7 +24,7 @@ func memberHeaders(t *testing.T, h http.Handler, username, password string) map[
 	if sid == "" {
 		t.Fatal("member login returned no session cookie")
 	}
-	return map[string]string{"Cookie": webuiSessionCookie + "=" + sid}
+	return map[string]string{"Cookie": auth.SessionCookieName + "=" + sid}
 }
 
 func TestClusterRosterAdminGate(t *testing.T) {

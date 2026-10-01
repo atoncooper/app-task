@@ -21,6 +21,8 @@ import (
 	"strings"
 	"time"
 
+	"app-task/internal/auth"
+	"app-task/internal/dto"
 	"app-task/internal/model"
 	"app-task/internal/repo"
 	"app-task/internal/service"
@@ -100,7 +102,7 @@ type BaseData struct {
 // title, and any ?ok=/?err= flash message left by a redirect.
 func newBase(c *gin.Context, active, title, desc string) BaseData {
 	b := BaseData{Version: webuiVersion, Active: active, PageTitle: title, PageDesc: desc}
-	if s, ok := currentUser(c); ok {
+	if s, ok := auth.CurrentUser(c); ok {
 		b.User = userData{Username: s.Username, IsAdmin: s.Role == "admin"}
 	}
 	if msg := c.Query("ok"); msg != "" {
@@ -654,7 +656,7 @@ func fmtStrPtr(p *string) string {
 // ownership: the webui_user row id. Master-token sessions (no user row)
 // own tasks as 0 (system).
 func sessionUID(c *gin.Context) int64 {
-	s, ok := currentUser(c)
+	s, ok := auth.CurrentUser(c)
 	if !ok || s.UserID == "" {
 		return 0
 	}
@@ -979,11 +981,11 @@ func (r *Router) pageScriptForm(c *gin.Context) {
 func (r *Router) handleScriptSave(c *gin.Context) {
 	edit := c.PostForm("edit") == "1"
 	back := "/console/scripts/new"
-	req := scriptUploadBody{
+	req := dto.ScriptUploadRequest{
 		Name:        strings.TrimSpace(c.PostForm("name")),
 		Description: strings.TrimSpace(c.PostForm("description")),
 		Source:      c.PostForm("source"),
-		Operator:    operatorOf(c),
+		Operator:    auth.OperatorOf(c),
 	}
 	enabled := c.PostForm("enabled") == "on"
 	req.Enabled = &enabled
@@ -1036,7 +1038,7 @@ func (r *Router) handleScriptToggle(c *gin.Context) {
 		ScriptID:  id,
 		Version:   latest.Version,
 		Action:    "toggle",
-		Operator:  operatorOf(c),
+		Operator:  auth.OperatorOf(c),
 		SourceIP:  c.ClientIP(),
 		RequestID: c.GetHeader("X-Request-Id"),
 		Summary:   "v" + strconv.Itoa(latest.Version) + " " + state,
@@ -1126,8 +1128,8 @@ type userRow struct {
 	Deletable      bool
 }
 
-func requireAdminPage(c *gin.Context) (webuiSession, bool) {
-	s, ok := currentUser(c)
+func requireAdminPage(c *gin.Context) (auth.Session, bool) {
+	s, ok := auth.CurrentUser(c)
 	if !ok || s.Role != "admin" {
 		redirectFlash(c, "/console", "err", "需要 admin 角色")
 		return s, false
@@ -1270,7 +1272,7 @@ func (r *Router) handleUserDelete(c *gin.Context) {
 
 // registerPages mounts the SSR console: standalone login/logout + the gated
 // page tree. GET pages render; POST endpoints follow redirect-after-post.
-func (r *Router) registerPages(e *gin.Engine, auth *webuiAuthenticator) {
+func (r *Router) registerPages(e *gin.Engine, authr *auth.Authenticator) {
 	// Static assets (stylesheet) stay public; *.html is hidden from the static
 	// route — pages are served only through the gated handlers below.
 	assetFS, err := fs.Sub(web.Assets, "assets")
@@ -1279,13 +1281,13 @@ func (r *Router) registerPages(e *gin.Engine, auth *webuiAuthenticator) {
 	}
 	e.StaticFS("/assets", http.FS(noHTMLFS{assetFS}))
 
-	e.GET("/login", loginPageHandler(auth))
-	e.POST("/login", loginSubmitHandler(auth))
-	e.POST("/logout", logoutSubmitHandler(auth))
+	e.GET("/login", loginPageHandler(authr))
+	e.POST("/login", loginSubmitHandler(authr))
+	e.POST("/logout", logoutSubmitHandler(authr))
 
 	// Root: bounce to the console when logged in, else to the login page.
 	e.GET("/", func(c *gin.Context) {
-		if _, ok := auth.authenticate(auth.extractToken(c)); ok {
+		if _, ok := authr.Authenticate(authr.ExtractToken(c)); ok {
 			c.Redirect(http.StatusFound, "/console")
 			return
 		}
@@ -1295,7 +1297,7 @@ func (r *Router) registerPages(e *gin.Engine, auth *webuiAuthenticator) {
 	// Console pages live under /console: the root path space is shared with
 	// the APISIX-facing gateway contract endpoints (/tasks/*, /scripts*),
 	// which must not move.
-	pages := e.Group("/console", auth.pageGate())
+	pages := e.Group("/console", authr.PageGate())
 	pages.GET("", r.pageDashboard)
 	pages.GET("/tasks", r.pageTasks)
 	pages.GET("/tasks/new", r.pageTaskNew)
@@ -1351,10 +1353,10 @@ func (r *Router) registerPages(e *gin.Engine, auth *webuiAuthenticator) {
 
 // ── login / logout (form flow) ──────────────────────────────────────
 
-func loginPageHandler(auth *webuiAuthenticator) gin.HandlerFunc {
+func loginPageHandler(authr *auth.Authenticator) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Already authenticated: nothing to do here.
-		if _, ok := auth.authenticate(auth.extractToken(c)); ok {
+		if _, ok := authr.Authenticate(authr.ExtractToken(c)); ok {
 			c.Redirect(http.StatusFound, "/console")
 			return
 		}
@@ -1362,36 +1364,36 @@ func loginPageHandler(auth *webuiAuthenticator) gin.HandlerFunc {
 	}
 }
 
-func loginSubmitHandler(auth *webuiAuthenticator) gin.HandlerFunc {
+func loginSubmitHandler(authr *auth.Authenticator) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		username := strings.TrimSpace(c.PostForm("username"))
 		password := c.PostForm("password")
 		ip := c.ClientIP()
-		if !auth.allow(ip) {
-			auth.throttleAbort(c)
+		if !authr.Allow(ip) {
+			authr.ThrottleAbort(c)
 			return
 		}
-		sess, ok := auth.verifyUser(username, password)
+		sess, ok := authr.VerifyUser(username, password)
 		if !ok {
-			auth.fail(ip)
+			authr.Fail(ip)
 			renderPage(c.Writer, "login", gin.H{
 				"Error":    "用户名或密码不正确",
 				"Username": username,
 			})
 			return
 		}
-		auth.reset(ip)
-		sid, err := auth.newSession(sess)
+		authr.Reset(ip)
+		sid, err := authr.NewSession(sess)
 		if err != nil {
 			slog.Error("[PAGE] issue session failed", "err", err)
 			http.Error(c.Writer, "internal error", http.StatusInternalServerError)
 			return
 		}
 		http.SetCookie(c.Writer, &http.Cookie{
-			Name:     webuiSessionCookie,
+			Name:     auth.SessionCookieName,
 			Value:    sid,
 			Path:     "/",
-			MaxAge:   int(auth.ttl.Seconds()),
+			MaxAge:   int(authr.TTL().Seconds()),
 			HttpOnly: true,
 			SameSite: http.SameSiteStrictMode,
 			Secure:   c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https",
@@ -1401,13 +1403,13 @@ func loginSubmitHandler(auth *webuiAuthenticator) gin.HandlerFunc {
 	}
 }
 
-func logoutSubmitHandler(auth *webuiAuthenticator) gin.HandlerFunc {
+func logoutSubmitHandler(authr *auth.Authenticator) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if tok := auth.extractToken(c); tok != "" {
-			auth.sessions.delete(tok)
+		if tok := authr.ExtractToken(c); tok != "" {
+			authr.RevokeSession(tok)
 		}
 		http.SetCookie(c.Writer, &http.Cookie{
-			Name:     webuiSessionCookie,
+			Name:     auth.SessionCookieName,
 			Value:    "",
 			Path:     "/",
 			MaxAge:   -1,
@@ -1415,21 +1417,6 @@ func logoutSubmitHandler(auth *webuiAuthenticator) gin.HandlerFunc {
 			SameSite: http.SameSiteStrictMode,
 		})
 		c.Redirect(http.StatusSeeOther, "/login")
-	}
-}
-
-// pageGate redirects unauthenticated page requests to /login BEFORE any HTML
-// is sent, and stashes the identity for handlers (JSON middleware's 302 twin).
-func (a *webuiAuthenticator) pageGate() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		sess, ok := a.authenticate(a.extractToken(c))
-		if !ok {
-			c.Redirect(http.StatusFound, "/login")
-			c.Abort()
-			return
-		}
-		c.Set(webuiCtxUser, sess)
-		c.Next()
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"app-task/internal/auth"
 	"app-task/internal/repo"
 
 	"github.com/gin-gonic/gin"
@@ -25,13 +26,17 @@ const apiKeyRevealCookie = "apptask_key_reveal"
 // credential sprawl from repeated console submissions.
 const maxActiveAPIKeys = 50
 
+// maxBoundUID caps the uid a key may be pinned to (signed 32-bit range).
+const maxBoundUID = 2147483647
+
 // allAPIKeyScopes is the full scope set; bootstrap keys get all of them.
-var allAPIKeyScopes = []string{scopeTasks, scopeScripts, scopeInternal}
+var allAPIKeyScopes = []string{auth.ScopeTasks, auth.ScopeScripts, auth.ScopeInternal}
 
 type apiKeyRow struct {
 	KeyID, Name, KeyPrefix, Status, StatusCli, CreatedBy string
 	Scopes                                               []string
 	RatePerMin                                           string
+	UID                                                  string // key-bound uid ("不限" when unbound)
 	LastUsedAt, ExpiresAt, CreatedAt                     string
 	Active                                               bool
 }
@@ -58,12 +63,17 @@ func (r *Router) pageAPIKeys(c *gin.Context) {
 		if k.RatePerMin > 0 {
 			rate = strconv.Itoa(k.RatePerMin) + "/分"
 		}
+		boundUID := "不限"
+		if k.UID > 0 {
+			boundUID = strconv.FormatInt(k.UID, 10)
+		}
 		rows = append(rows, apiKeyRow{
 			KeyID:      k.KeyID,
 			Name:       k.Name,
 			KeyPrefix:  k.KeyPrefix,
 			Scopes:     scopes,
 			RatePerMin: rate,
+			UID:        boundUID,
 			Status:     st,
 			StatusCli:  sc,
 			CreatedBy:  k.CreatedBy,
@@ -116,13 +126,21 @@ func (r *Router) handleAPIKeyCreate(c *gin.Context) {
 		redirectFlash(c, "/console/apikeys", "err", "限流需 0–600 次/分钟（0 = 不限）")
 		return
 	}
+	// UID binding: >0 pins every call made with this key to that owner uid
+	// (X-Uid and body uid are overridden/rejected). 0 keeps the gateway
+	// contract (trust the injected X-Uid) — bootstrap/gateway keys only.
+	uid, _ := strconv.ParseInt(strings.TrimSpace(c.PostForm("uid")), 10, 64)
+	if uid < 0 || uid > maxBoundUID {
+		redirectFlash(c, "/console/apikeys", "err", "绑定 UID 需 0–2147483647（0 = 不绑定，信任网关注入的 X-Uid）")
+		return
+	}
 	scopes := c.PostFormArray("scopes")
 	if len(scopes) == 0 {
 		redirectFlash(c, "/console/apikeys", "err", "至少选择一个权限范围")
 		return
 	}
 	for _, sc := range scopes {
-		if sc != scopeTasks && sc != scopeScripts && sc != scopeInternal {
+		if sc != auth.ScopeTasks && sc != auth.ScopeScripts && sc != auth.ScopeInternal {
 			redirectFlash(c, "/console/apikeys", "err", "未知权限范围：%s", sc)
 			return
 		}
@@ -132,7 +150,7 @@ func (r *Router) handleAPIKeyCreate(c *gin.Context) {
 		return
 	}
 
-	plaintext, row, err := generateAPIKey()
+	plaintext, row, err := auth.GenerateAPIKey()
 	if err != nil {
 		redirectFlash(c, "/console/apikeys", "err", "生成失败：%v", err)
 		return
@@ -141,6 +159,7 @@ func (r *Router) handleAPIKeyCreate(c *gin.Context) {
 	row.CreatedBy = s.Username
 	row.Scopes = strings.Join(scopes, ",")
 	row.RatePerMin = ratePerMin
+	row.UID = uid
 	if expiresDays > 0 {
 		exp := time.Now().AddDate(0, 0, expiresDays)
 		row.ExpiresAt = &exp
@@ -150,12 +169,12 @@ func (r *Router) handleAPIKeyCreate(c *gin.Context) {
 		return
 	}
 
-	token := r.keys.putReveal(plaintext)
+	token := r.keys.PutReveal(plaintext)
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     apiKeyRevealCookie,
 		Value:    token,
 		Path:     "/",
-		MaxAge:   int(apiKeyRevealTTL.Seconds()),
+		MaxAge:   int(auth.RevealTTL.Seconds()),
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
 		Secure:   c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https",
@@ -172,7 +191,7 @@ func (r *Router) pageAPIKeyRevealed(c *gin.Context) {
 	token, err := c.Cookie(apiKeyRevealCookie)
 	plaintext, ok := "", false
 	if err == nil && token != "" {
-		plaintext, ok = r.keys.takeReveal(token)
+		plaintext, ok = r.keys.TakeReveal(token)
 	}
 	// The cookie is single-use either way.
 	http.SetCookie(c.Writer, &http.Cookie{

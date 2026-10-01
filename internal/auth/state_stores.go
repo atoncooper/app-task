@@ -1,11 +1,11 @@
-// Package router: pluggable backing stores for the console's per-process
-// state. The default implementations are in-process memory (single instance,
-// zero dependencies); webui.session_store=redis swaps in Redis-backed ones so
-// sessions, one-time API-key reveals, auth-failure throttles and per-key rate
-// counters are shared across instances. Every Redis path is fail-open where
-// the semantics allow it (throttles/limits) and degrades to an error where it
-// must (session save), matching the app-auth Redis conventions.
-package router
+// Pluggable backing stores for console/auth per-process state. The default
+// implementations are in-process memory (single instance, zero dependencies);
+// webui.session_store=redis swaps in Redis-backed ones so sessions, one-time
+// API-key reveals, auth-failure throttles and per-key rate counters are shared
+// across instances. Every Redis path is fail-open where the semantics allow it
+// (throttles/limits) and degrades to an error where it must (session save),
+// matching the app-auth Redis conventions.
+package auth
 
 import (
 	"context"
@@ -35,8 +35,8 @@ type keyRateLimiter interface {
 
 // sessionStore persists browser/API sessions (webuiSession + TTL).
 type sessionStore interface {
-	save(id string, s webuiSession, ttl time.Duration) error
-	load(id string) (webuiSession, bool)
+	save(id string, s Session, ttl time.Duration) error
+	load(id string) (Session, bool)
 	delete(id string)
 }
 
@@ -44,6 +44,48 @@ type sessionStore interface {
 type revealStore interface {
 	put(plaintext string, ttl time.Duration) string
 	take(token string, ttl time.Duration) (string, bool)
+}
+
+// Stores bundles the backing stores shared by the key service and the console
+// authenticator. Field types are unexported interfaces — callers just pass
+// the fields back into the auth constructors.
+type Stores struct {
+	Sessions sessionStore
+	Throttle throttler
+	Limiter  keyRateLimiter
+	Reveals  revealStore
+}
+
+// NewStateStores builds the store set per config: in-process memory by
+// default; Redis-backed (shared across instances) when
+// webui.session_store=redis. A missing or malformed redis URL fails loud —
+// half-configured console state is worse than none.
+func NewStateStores(cfg *config.Config) *Stores {
+	s := &Stores{
+		Sessions: newMemorySessionStore(),
+		Throttle: newMemoryThrottler(webuiMaxFails, webuiFailWindow),
+		Limiter:  newMemoryLimiter(),
+		Reveals:  newMemoryRevealStore(),
+	}
+	if cfg.WebUI.SessionStore != "redis" {
+		return s
+	}
+	if cfg.Redis.URL == "" {
+		panic("webui.session_store=redis requires redis.url (env APPTASK__REDIS__URL or shared REDIS__URL)")
+	}
+	rdb, err := newRedisClient(cfg.Redis)
+	if err != nil {
+		panic("webui.session_store=redis: bad redis.url: " + err.Error())
+	}
+	if err := rdb.Ping(context.Background()).Err(); err != nil {
+		slog.Error("[WEBUI] redis ping failed — throttles fail open, but logins need redis back", "err", err)
+	}
+	s.Sessions = newRedisSessionStore(rdb)
+	s.Throttle = newRedisThrottler(rdb, webuiMaxFails, webuiFailWindow)
+	s.Limiter = newRedisLimiter(rdb)
+	s.Reveals = newRedisRevealStore(rdb)
+	slog.Info("[WEBUI] redis-backed console state enabled")
+	return s
 }
 
 // ── memory implementations (default, single instance) ────────────────
@@ -128,27 +170,27 @@ func (m *memoryLimiter) allowRequest(keyID string, ratePerMin int) bool {
 // memorySessionStore is the in-process session table.
 type memorySessionStore struct {
 	mu       sync.Mutex
-	sessions map[string]webuiSession
+	sessions map[string]Session
 }
 
 func newMemorySessionStore() *memorySessionStore {
-	return &memorySessionStore{sessions: make(map[string]webuiSession)}
+	return &memorySessionStore{sessions: make(map[string]Session)}
 }
 
-func (m *memorySessionStore) save(id string, s webuiSession, _ time.Duration) error {
+func (m *memorySessionStore) save(id string, s Session, _ time.Duration) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sessions[id] = s
 	return nil
 }
 
-func (m *memorySessionStore) load(id string) (webuiSession, bool) {
+func (m *memorySessionStore) load(id string) (Session, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s, ok := m.sessions[id]
 	if !ok || time.Now().After(s.Expiry) {
 		delete(m.sessions, id)
-		return webuiSession{}, false
+		return Session{}, false
 	}
 	return s, true
 }
@@ -175,7 +217,7 @@ func newMemoryRevealStore() *memoryRevealStore {
 }
 
 func (m *memoryRevealStore) put(plaintext string, ttl time.Duration) string {
-	tok := newKeyID()
+	tok := NewKeyID()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for id, e := range m.reveals { // opportunistic GC of expired entries
@@ -317,7 +359,7 @@ func (r *redisSessionStore) key(id string) string {
 	return redisKeyPrefix + "sess:" + id
 }
 
-func (r *redisSessionStore) save(id string, s webuiSession, ttl time.Duration) error {
+func (r *redisSessionStore) save(id string, s Session, ttl time.Duration) error {
 	b, err := json.Marshal(s)
 	if err != nil {
 		return err
@@ -325,18 +367,18 @@ func (r *redisSessionStore) save(id string, s webuiSession, ttl time.Duration) e
 	return r.rdb.Set(context.Background(), r.key(id), b, ttl).Err()
 }
 
-func (r *redisSessionStore) load(id string) (webuiSession, bool) {
+func (r *redisSessionStore) load(id string) (Session, bool) {
 	b, err := r.rdb.Get(context.Background(), r.key(id)).Bytes()
 	if err != nil {
-		return webuiSession{}, false
+		return Session{}, false
 	}
-	var s webuiSession
+	var s Session
 	if err := json.Unmarshal(b, &s); err != nil {
-		return webuiSession{}, false
+		return Session{}, false
 	}
 	if time.Now().After(s.Expiry) {
 		r.delete(id)
-		return webuiSession{}, false
+		return Session{}, false
 	}
 	return s, true
 }
@@ -354,7 +396,7 @@ func newRedisRevealStore(rdb *redis.Client) *redisRevealStore {
 }
 
 func (r *redisRevealStore) put(plaintext string, ttl time.Duration) string {
-	tok := newKeyID()
+	tok := NewKeyID()
 	r.rdb.Set(context.Background(), redisKeyPrefix+"reveal:"+tok, plaintext, ttl)
 	return tok
 }

@@ -215,6 +215,16 @@ type SecurityConfig struct {
 	// APPTASK__SECURITY__SERVICE_KEYS; falls back to the legacy
 	// APPTASK__APP__CONSUMER_KEY when unset.
 	ServiceKeys []string `yaml:"service_keys"`
+	// BlockPrivateExecutorHosts rejects /tasks/register calls whose
+	// executor_url targets loopback/private/link-local addresses (DNS
+	// resolved and checked at registration time). Off by default: most
+	// deployments run tasks against in-cluster executors, which this flag
+	// would reject. Turn it on when third parties register tasks and the
+	// executor network must not be probed (SSRF hardening). Note: DNS
+	// rebinding between register and dispatch is not covered — put executors
+	// on an isolated network for that threat model.
+	// Env: APPTASK__SECURITY__EXECUTOR_BLOCK_PRIVATE_HOSTS=true|1
+	BlockPrivateExecutorHosts bool `yaml:"executor_block_private_hosts"`
 }
 
 // Load parses embedded default.yaml + applies APPTASK__ env overrides.
@@ -351,6 +361,9 @@ func applyEnvOverrides(cfg *Config) {
 	} else if v := get("APPTASK__APP__CONSUMER_KEY"); v != "" {
 		// legacy env (previously dead config): adopt as the bootstrap key
 		cfg.Security.ServiceKeys = splitCSV(v)
+	}
+	if v := get("APPTASK__SECURITY__EXECUTOR_BLOCK_PRIVATE_HOSTS"); v != "" {
+		cfg.Security.BlockPrivateExecutorHosts = v == "true" || v == "1"
 	}
 	if v := get("APPTASK__LOG__LEVEL"); v != "" {
 		cfg.Log.Level = v

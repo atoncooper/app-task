@@ -7,29 +7,21 @@ import (
 	"strings"
 	"time"
 
+	"app-task/internal/auth"
+	"app-task/internal/dto"
 	"app-task/internal/executor"
 	"app-task/internal/model"
 	"app-task/internal/repo"
+	"app-task/internal/router/middleware"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
-// scriptUploadBody is the shared create/update request shape used by both the
-// key-auth /scripts endpoint and the admin console POST /api/scripts.
-type scriptUploadBody struct {
-	ScriptID    string `json:"script_id" binding:"max=64"` // optional: server assigns a UUID when omitted
-	Name        string `json:"name" binding:"required,max=128"`
-	Description string `json:"description" binding:"max=512"`
-	Source      string `json:"source" binding:"required"`
-	Enabled     *bool  `json:"enabled"`
-	Operator    string `json:"operator" binding:"max=64"`
-}
-
 func (r *Router) uploadScript(c *gin.Context) {
-	var req scriptUploadBody
+	var req dto.ScriptUploadRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request: " + err.Error()})
+		middleware.RespondError(c, http.StatusBadRequest, "invalid_request", "invalid request: "+err.Error())
 		return
 	}
 	// script_id is server-assigned when omitted (UUID); callers may supply
@@ -40,7 +32,7 @@ func (r *Router) uploadScript(c *gin.Context) {
 	}
 	version, logID, err := r.applyScriptUpload(req, c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"detail": "script rejected: " + err.Error()})
+		middleware.RespondError(c, http.StatusBadRequest, "script_rejected", "script rejected: "+err.Error())
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -53,7 +45,7 @@ func (r *Router) uploadScript(c *gin.Context) {
 
 // applyScriptUpload compiles + persists a script version and writes the audit
 // log entry. Shared by /scripts (key-auth) and /api/scripts (admin console).
-func (r *Router) applyScriptUpload(req scriptUploadBody, c *gin.Context) (version int, logID string, err error) {
+func (r *Router) applyScriptUpload(req dto.ScriptUploadRequest, c *gin.Context) (version int, logID string, err error) {
 	enabled := true
 	if req.Enabled != nil {
 		enabled = *req.Enabled
@@ -67,10 +59,10 @@ func (r *Router) applyScriptUpload(req scriptUploadBody, c *gin.Context) (versio
 		operator = c.GetHeader("X-Operator")
 	}
 	if operator == "" {
-		operator = operatorOf(c)
+		operator = auth.OperatorOf(c)
 	}
 	if operator == "" {
-		operator = currentAPIKeyName(c)
+		operator = auth.CurrentAPIKeyName(c)
 	}
 	requestID := c.GetHeader("X-Request-Id")
 	if requestID == "" {
@@ -116,7 +108,7 @@ func (r *Router) applyScriptUpload(req scriptUploadBody, c *gin.Context) (versio
 func (r *Router) listScripts(c *gin.Context) {
 	scripts, err := repo.ListScripts()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		middleware.RespondError(c, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	out := make([]gin.H, 0, len(scripts))
@@ -138,7 +130,7 @@ func (r *Router) listScripts(c *gin.Context) {
 func (r *Router) scriptLogs(c *gin.Context) {
 	scriptID := c.Query("script_id")
 	if scriptID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"detail": "script_id query param required"})
+		middleware.RespondError(c, http.StatusBadRequest, "invalid_request", "script_id query param required")
 		return
 	}
 	limit := 50
@@ -149,7 +141,7 @@ func (r *Router) scriptLogs(c *gin.Context) {
 	}
 	logs, err := repo.ListScriptLogs(scriptID, limit)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		middleware.RespondError(c, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	out := make([]gin.H, 0, len(logs))

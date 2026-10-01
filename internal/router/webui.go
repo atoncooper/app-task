@@ -450,19 +450,19 @@ func (r *Router) apiTaskDetail(c *gin.Context) {
 // sessions (no user row) and explicit uids pass through unchanged.
 func (r *Router) apiCreateTask(c *gin.Context) {
 	var req struct {
-		UID         int64           `json:"uid"`
-		TaskType    string          `json:"task_type"`
-		Payload     json.RawMessage `json:"payload"`
-		ExecutorURL string          `json:"executor_url"`
-		Async       bool            `json:"async"`
-		CronExpr    string          `json:"cron_expr"`
-		TriggerTime string          `json:"trigger_time"`
-		MaxRetry    int             `json:"max_retry"`
-		Weight      int             `json:"weight"`
-		Shard       bool            `json:"shard"`
-		ShardTotal  int             `json:"shard_total"`
-		CalendarID  string          `json:"calendar_id"`
-		AlertChannel string         `json:"alert_channel"`
+		UID          int64           `json:"uid"`
+		TaskType     string          `json:"task_type"`
+		Payload      json.RawMessage `json:"payload"`
+		ExecutorURL  string          `json:"executor_url"`
+		Async        bool            `json:"async"`
+		CronExpr     string          `json:"cron_expr"`
+		TriggerTime  string          `json:"trigger_time"`
+		MaxRetry     int             `json:"max_retry"`
+		Weight       int             `json:"weight"`
+		Shard        bool            `json:"shard"`
+		ShardTotal   int             `json:"shard_total"`
+		CalendarID   string          `json:"calendar_id"`
+		AlertChannel string          `json:"alert_channel"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request: " + err.Error()})

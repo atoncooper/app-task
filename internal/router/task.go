@@ -21,19 +21,19 @@ func (r *Router) register(c *gin.Context) {
 		return
 	}
 	var req struct {
-		UID         int64           `json:"uid" binding:"required"`
-		TaskType    string          `json:"task_type"`    // http (default) / lua / notify
-		Payload     json.RawMessage `json:"payload"`      // opaque task parameters
-		ExecutorURL string          `json:"executor_url"` // http mode: third-party executor endpoint
-		Async       bool            `json:"async"`        // true: executor replies 202 + callback
-		CronExpr    string          `json:"cron_expr"`    // 5-field cron; empty = one-shot
-		TriggerTime string          `json:"trigger_time"` // required when cron_expr is empty
-		MaxRetry    int             `json:"max_retry"`
-		Weight      int             `json:"weight"`
-		Shard       bool            `json:"shard"`       // 分片广播模式
-		ShardTotal  int             `json:"shard_total"` // 0 = 按存活节点数
-		CalendarID  string          `json:"calendar_id"` // 业务日历（cron 任务生效）
-		AlertChannel string         `json:"alert_channel"` // 最终失败告警渠道（notify 渠道名）
+		UID          int64           `json:"uid" binding:"required"`
+		TaskType     string          `json:"task_type"`    // http (default) / lua / notify
+		Payload      json.RawMessage `json:"payload"`      // opaque task parameters
+		ExecutorURL  string          `json:"executor_url"` // http mode: third-party executor endpoint
+		Async        bool            `json:"async"`        // true: executor replies 202 + callback
+		CronExpr     string          `json:"cron_expr"`    // 5-field cron; empty = one-shot
+		TriggerTime  string          `json:"trigger_time"` // required when cron_expr is empty
+		MaxRetry     int             `json:"max_retry"`
+		Weight       int             `json:"weight"`
+		Shard        bool            `json:"shard"`         // 分片广播模式
+		ShardTotal   int             `json:"shard_total"`   // 0 = 按存活节点数
+		CalendarID   string          `json:"calendar_id"`   // 业务日历（cron 任务生效）
+		AlertChannel string          `json:"alert_channel"` // 最终失败告警渠道（notify 渠道名）
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request: " + err.Error()})

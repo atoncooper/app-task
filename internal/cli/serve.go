@@ -139,6 +139,10 @@ func runServer(defaultYAML []byte) error {
 	}
 	notifySvc := service.NewNotifyService(emailSvc, notifyCipher,
 		time.Duration(cfg.Notification.HTTPTimeoutSeconds)*time.Second, cfg.Notification.RateLimitPerMin)
+	// AI 网关（OpenAI 兼容）：nil = 未配置，digest 降级统计模板、告警无诊断、
+	// 编辑器无 AI 按钮。
+	llmClient := service.NewLLMClient(&cfg.AI)
+	digestSvc := service.NewDigestService(notifySvc, llmClient)
 
 	// HTTP executor: dispatches tasks to third-party executors (the default
 	// task_type). Supports http:// and https:// (private CA via ca_file,
@@ -162,6 +166,7 @@ func runServer(defaultYAML []byte) error {
 	reg.Register("http", httpExec.Handler())
 	reg.Register("lua", luaExec.Handler())
 	reg.Register("notify", notifySvc.Handler())
+	reg.Register("digest", digestSvc.Handler())
 
 	// Cluster identity: one node id shared by the scheduler owner and the
 	// cluster roster (task.owner / cluster_node.node_id are the same value).

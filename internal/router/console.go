@@ -533,6 +533,8 @@ func (r *Router) pageTaskNew(c *gin.Context) {
 	for _, ca := range calendars {
 		calNames = append(calNames, ca.Name)
 	}
+	// 失败告警渠道下拉（启用的 notify 渠道名）
+	alertChannels := notifyChannelNames()
 
 	base := newBase(c, "tasks", "新建任务", "任务 = 调度定义（类型 + payload + 执行器 + cron/触发时间 + 重试）")
 	renderPage(c.Writer, "task_form", struct {
@@ -540,14 +542,16 @@ func (r *Router) pageTaskNew(c *gin.Context) {
 		TaskType, ScriptID, Payload, Owner string
 		Scripts                            []gin.H
 		Calendars                          []string
+		AlertChannels                      []string
 	}{
-		BaseData:  base,
-		TaskType:  taskType,
-		ScriptID:  scriptID,
-		Payload:   payload,
-		Owner:     base.User.Username,
-		Scripts:   options,
-		Calendars: calNames,
+		BaseData:      base,
+		TaskType:      taskType,
+		ScriptID:      scriptID,
+		Payload:       payload,
+		Owner:         base.User.Username,
+		Scripts:       options,
+		Calendars:     calNames,
+		AlertChannels: alertChannels,
 	})
 }
 
@@ -725,9 +729,10 @@ func (r *Router) handleTaskCreate(c *gin.Context) {
 		UID: uid, TaskType: taskType, Payload: payload, ExecutorURL: strings.TrimSpace(c.PostForm("executor_url")),
 		Async: c.PostForm("async") == "on", CronExpr: cron, TriggerTime: trigger,
 		MaxRetry: maxRetry, Weight: weight,
-		Shard:      c.PostForm("shard") == "on",
-		ShardTotal: shardTotal,
-		CalendarID: strings.TrimSpace(c.PostForm("calendar_id")),
+		Shard:        c.PostForm("shard") == "on",
+		ShardTotal:   shardTotal,
+		CalendarID:   strings.TrimSpace(c.PostForm("calendar_id")),
+		AlertChannel: strings.TrimSpace(c.PostForm("alert_channel")),
 	})
 	if err != nil {
 		redirectFlash(c, "/console/tasks/new", "err", "创建失败：%v", err)

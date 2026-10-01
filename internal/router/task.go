@@ -33,6 +33,7 @@ func (r *Router) register(c *gin.Context) {
 		Shard       bool            `json:"shard"`       // 分片广播模式
 		ShardTotal  int             `json:"shard_total"` // 0 = 按存活节点数
 		CalendarID  string          `json:"calendar_id"` // 业务日历（cron 任务生效）
+		AlertChannel string         `json:"alert_channel"` // 最终失败告警渠道（notify 渠道名）
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request: " + err.Error()})
@@ -55,7 +56,7 @@ func (r *Router) register(c *gin.Context) {
 		UID: req.UID, TaskType: req.TaskType, Payload: req.Payload, ExecutorURL: req.ExecutorURL,
 		Async: req.Async, CronExpr: req.CronExpr, TriggerTime: triggerTime,
 		MaxRetry: req.MaxRetry, Weight: req.Weight, Shard: req.Shard, ShardTotal: req.ShardTotal,
-		CalendarID: req.CalendarID,
+		CalendarID: req.CalendarID, AlertChannel: req.AlertChannel,
 	})
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "register failed: " + err.Error()})

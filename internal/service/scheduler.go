@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -51,6 +52,9 @@ type Scheduler struct {
 	dispatchingTTL time.Duration
 	perURLLimit    int
 	maxShards      int
+	notify         *NotifyService
+	llm            *LLMClient
+	sendPayload    bool
 	owner          string
 
 	slots    chan struct{}  // global dispatch concurrency bound (cap = workers)
@@ -92,6 +96,11 @@ type SchedulerOptions struct {
 	Owner          string        // instance identity for claims (default hostname+rand)
 	Weight         int           // dispatch share relative to the max alive weight (default 1)
 	MaxShards      int           // shard-broadcast fan-out cap (default 32)
+	// Notify + LLM power the failure alert path (task.alert_channel): alerts
+	// go out on final failure, with an AI RCA section when LLM is configured.
+	Notify          *NotifyService
+	LLM             *LLMClient
+	SendPayloadData bool // false: RCA prompts never include task payload bodies
 }
 
 // Defaults for zero-valued SchedulerOptions fields.
@@ -140,6 +149,9 @@ func NewScheduler(reg *executor.Registry, opts SchedulerOptions) *Scheduler {
 		perURLLimit:    opts.PerURLLimit,
 		maxShards:      opts.MaxShards,
 		owner:          opts.Owner,
+		notify:         opts.Notify,
+		llm:            opts.LLM,
+		sendPayload:    opts.SendPayloadData,
 		weight:         opts.Weight,
 		slots:          make(chan struct{}, opts.Workers),
 		sems:           make(map[string]chan struct{}),
@@ -375,6 +387,62 @@ func (s *Scheduler) dispatch(task *model.Task) {
 	s.markFailedOrRetry(task, err, start)
 }
 
+// sendFailureAlert pushes a final-failure alert through the task's channel,
+// with an AI root-cause section when the LLM gateway is configured. Runs in
+// its own goroutine — panics are contained, delivery errors are logged only
+// (the task itself is already terminal).
+func (s *Scheduler) sendFailureAlert(task *model.Task, errMsg string) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("[SCHEDULER] failure alert panic", "task_id", task.TaskID, "panic", rec)
+		}
+	}()
+	text := fmt.Sprintf("**任务最终失败**（重试 %d 次后）\n- task_id: `%s`\n- 执行器: %s\n- 执行节点: %s\n- 错误: %s",
+		task.RetryCount, task.TaskID, executorName(task), s.owner, truncate(errMsg, 500))
+	title := fmt.Sprintf("任务失败：%s", task.TaskID)
+
+	if s.llm != nil && s.llm.Enabled() {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		text += s.rcaSection(ctx, task, errMsg)
+	}
+	notif := &Notification{Title: title, Text: text, MsgType: "markdown"}
+	if err := s.notify.DeliverByChannel(task.AlertChannel, notif, ""); err != nil {
+		slog.Error("[SCHEDULER] failure alert delivery failed", "task_id", task.TaskID, "channel", task.AlertChannel, "err", err)
+		return
+	}
+	slog.Info("[SCHEDULER] failure alert sent", "task_id", task.TaskID, "channel", task.AlertChannel)
+}
+
+// rcaSection asks the LLM for a root-cause + fix suggestion from the error
+// and the last few execution records. Privacy: task payload bodies are only
+// included when ai.send_payload_data is true (may contain business data).
+func (s *Scheduler) rcaSection(ctx context.Context, task *model.Task, errMsg string) string {
+	logs, err := repo.ListTaskLogs(task.TaskID, 5)
+	var records []string
+	if err == nil {
+		for i := range logs {
+			e := ""
+			if logs[i].Error != nil {
+				e = *logs[i].Error
+			}
+			records = append(records, fmt.Sprintf("%s status=%s node=%s duration=%dms error=%s",
+				logs[i].TriggerAt.Format(time.RFC3339), logs[i].Status, logs[i].Node, logs[i].DurationMS, e))
+		}
+	}
+	user := fmt.Sprintf("定时任务信息：\n- task_type=%s executor=%s\n- 最终错误：%s\n- 最近执行记录：\n%s",
+		task.TaskType, task.ExecutorURL, errMsg, strings.Join(records, "\n"))
+	if s.sendPayload && len(task.Payload) > 0 {
+		user += "\n- payload: " + truncate(string(task.Payload), 1000)
+	}
+	rca, err := s.llm.Chat(ctx, "你是运维专家。根据定时任务的错误与最近执行记录，用不超过 150 字的中文给出根因分析和一条修复建议。只输出正文。", user)
+	if err != nil {
+		slog.Warn("[SCHEDULER] AI RCA unavailable", "task_id", task.TaskID, "err", err)
+		return "\n\n（AI 诊断不可用）"
+	}
+	return "\n\n**【AI 诊断】**\n" + rca
+}
+
 // logOrphan records a dispatch result that could not be finalized because the
 // claim was superseded (reclaimed and re-dispatched after a >TTL stall). The
 // executor side effect DID happen — at-least-once semantics — so operators
@@ -492,6 +560,10 @@ func (s *Scheduler) markFailedOrRetry(task *model.Task, err error, start time.Ti
 	}
 	if ok, _ := repo.FinalizeClaim(task.TaskID, task.ClaimToken, "failed", map[string]any{"owner": "", "claimed_at": nil}); ok {
 		s.writeLog(task, "failed", duration, "", errMsg)
+		s.maybeFinalizeShardParent(task)
+		if task.AlertChannel != "" && s.notify != nil {
+			go s.sendFailureAlert(task, errMsg) // 不阻塞派发池：LLM 调用秒级到十秒级
+		}
 		slog.Error("[SCHEDULER] task failed", "task_id", task.TaskID, "task_type", task.TaskType, "err", errMsg)
 	} else {
 		s.logOrphan(task, "failure")

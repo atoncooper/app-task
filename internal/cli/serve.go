@@ -197,14 +197,17 @@ func runServer(defaultYAML []byte) error {
 	// pool, record outcomes in task_log. Zero option values fall back to the
 	// service defaults.
 	sched := service.NewScheduler(reg, service.SchedulerOptions{
-		Interval:       time.Duration(cfg.Scheduler.IntervalSeconds) * time.Second,
-		Workers:        cfg.Scheduler.Workers,
-		BatchSize:      cfg.Scheduler.BatchSize,
-		DispatchingTTL: time.Duration(cfg.Scheduler.DispatchingTimeoutSecond) * time.Second,
-		PerURLLimit:    cfg.Scheduler.PerURLLimit,
-		MaxShards:      cfg.Scheduler.MaxShards,
-		Owner:          instanceID,
-		Weight:         cfg.Scheduler.Weight,
+		Interval:        time.Duration(cfg.Scheduler.IntervalSeconds) * time.Second,
+		Workers:         cfg.Scheduler.Workers,
+		BatchSize:       cfg.Scheduler.BatchSize,
+		DispatchingTTL:  time.Duration(cfg.Scheduler.DispatchingTimeoutSecond) * time.Second,
+		PerURLLimit:     cfg.Scheduler.PerURLLimit,
+		MaxShards:       cfg.Scheduler.MaxShards,
+		Notify:          notifySvc,
+		LLM:             llmClient,
+		SendPayloadData: cfg.AI.SendPayloadData,
+		Owner:           instanceID,
+		Weight:          cfg.Scheduler.Weight,
 	})
 	sched.SetClusterView(clusterMgr)
 	sched.Start()

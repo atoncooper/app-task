@@ -462,6 +462,7 @@ func (r *Router) apiCreateTask(c *gin.Context) {
 		Shard       bool            `json:"shard"`
 		ShardTotal  int             `json:"shard_total"`
 		CalendarID  string          `json:"calendar_id"`
+		AlertChannel string         `json:"alert_channel"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request: " + err.Error()})
@@ -487,7 +488,7 @@ func (r *Router) apiCreateTask(c *gin.Context) {
 		UID: req.UID, TaskType: req.TaskType, Payload: req.Payload, ExecutorURL: req.ExecutorURL,
 		Async: req.Async, CronExpr: req.CronExpr, TriggerTime: triggerTime,
 		MaxRetry: req.MaxRetry, Weight: req.Weight, Shard: req.Shard, ShardTotal: req.ShardTotal,
-		CalendarID: req.CalendarID,
+		CalendarID: req.CalendarID, AlertChannel: req.AlertChannel,
 	})
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "register failed: " + err.Error()})

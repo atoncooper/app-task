@@ -46,7 +46,7 @@ func errCode(t *testing.T, w *httptest.ResponseRecorder) string {
 
 // listResp is the /tasks response shape the tests assert on.
 type listResp struct {
-	Tasks  []struct {
+	Tasks []struct {
 		TaskID string `json:"task_id"`
 	} `json:"tasks"`
 	Total  int64 `json:"total"`

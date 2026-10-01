@@ -28,6 +28,21 @@ type Config struct {
 	WebUI        WebUIConfig        `yaml:"webui"`
 	Security     SecurityConfig     `yaml:"security"`
 	Log          LogConfig          `yaml:"log"`
+	AI           AIConfig           `yaml:"ai"`
+}
+
+// AIConfig configures the shared LLM gateway (OpenAI-compatible endpoint:
+// DeepSeek / Qwen / Moonshot / Ollama / OneAPI all fit). Empty model or
+// api_key disables every AI feature — digest falls back to a deterministic
+// template, failure alerts go out without the RCA section, and the script
+// editor hides the AI button.
+type AIConfig struct {
+	BaseURL         string `yaml:"base_url"`          // OpenAI-compatible base (…/v1)
+	Model           string `yaml:"model"`             // required for AI features
+	APIKey          string `yaml:"api_key"`           // ${APPTASK__AI__API_KEY}; masked in logs
+	TimeoutSeconds  int    `yaml:"timeout_seconds"`   // 0 = 30s per call
+	MaxTokens       int    `yaml:"max_tokens"`        // 0 = 1024
+	SendPayloadData bool   `yaml:"send_payload_data"` // false: RCA prompts never include task payload bodies
 }
 
 type LogConfig struct {

@@ -381,3 +381,25 @@ func str(v any) string {
 	}
 	return strings.TrimSpace(fmt.Sprint(v))
 }
+
+// DeliverByChannel renders notif through the named notify channel — the
+// reuse path for digest summaries and failure alerts. Email-type channels
+// enqueue with reference `ref` ("" skips the dedup guard); webhook-ish
+// channels send directly. All channel machinery (resolve/decrypt/rate
+// limit/mask) is shared with task-driven notify.
+func (s *NotifyService) DeliverByChannel(name string, notif *Notification, ref string) error {
+	ch, err := s.resolveChannel(name)
+	if err != nil {
+		return err
+	}
+	if ch.Type == repo.ChannelTypeEmail {
+		notif.To = addressListAny(ch.Config["to"])
+		notif.CC = addressListAny(ch.Config["cc"])
+		if len(notif.To) == 0 {
+			return fmt.Errorf("notify channel %q: config.to required", name)
+		}
+		return s.enqueueEmailGuarded(notif, ref, func(string) {}, func(m string) string { return m })
+	}
+	var mask []string
+	return s.deliverWebhookish(ch, notif, &mask)
+}

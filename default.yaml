@@ -82,6 +82,14 @@ email:
   api_key: "${APPTASK__EMAIL__API_KEY}"   # inject via APPTASK__EMAIL__API_KEY / APPTASK_EMAIL_API_KEY
   from_email: "MindBase <onboarding@resend.dev>"
 
+ai:
+  base_url: "https://api.deepseek.com/v1"   # OpenAI 兼容端点（DeepSeek/Qwen/Moonshot/Ollama/OneAPI 均可）
+  model: ""                                  # 留空 = 关闭全部 AI 功能（日报降级为统计模板）
+  api_key: "${APPTASK__AI__API_KEY}"         # 日志中全程脱敏
+  timeout_seconds: 30                        # 单次 LLM 调用超时
+  max_tokens: 1024
+  send_payload_data: false                   # 根因分析 prompt 是否包含任务 payload（含业务数据，默认不传）
+
 notification:
   worker_interval_seconds: 30   # 邮件投递 worker 扫描间隔
   retry_max: 5                  # 发送失败最大重试

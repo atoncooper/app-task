@@ -272,3 +272,18 @@ func cals() []model.BizCalendar {
 	out, _ := repo.ListBizCalendars()
 	return out
 }
+
+// notifyChannelNames lists enabled notify channels (task-form alert dropdown).
+func notifyChannelNames() []string {
+	chs, err := repo.ListNotifyChannels()
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(chs))
+	for _, ch := range chs {
+		if ch.Enabled {
+			names = append(names, ch.Name)
+		}
+	}
+	return names
+}

@@ -45,7 +45,10 @@ type Task struct {
 	// 普通任务 parent_task_id 为 NULL（唯一索引 uk_shard 因此不影响它们）。
 	// 业务日历：cron 物化时按日历跳过节假日/补班调休（空 = 不使用，行为不变）。
 	// 存日历名称（biz_calendar.name，唯一键）——可读且控制台/CLI 直接引用。
-	CalendarID   string     `gorm:"column:calendar_id;size:64" json:"calendar_id,omitempty"`
+	CalendarID string `gorm:"column:calendar_id;size:64" json:"calendar_id,omitempty"`
+	// 失败告警：任务最终失败（重试耗尽）时经该 notify 渠道推送，空 = 不告警。
+	// AI 已配置时告警自动附根因诊断（见 scheduler.sendFailureAlert）。
+	AlertChannel string     `gorm:"column:alert_channel;size:64" json:"alert_channel,omitempty"`
 	Shard        bool       `gorm:"column:shard;not null" json:"shard"`
 	ShardTotal   int        `gorm:"column:shard_total;not null;default:0" json:"shard_total"` // 父: 实际片数(0=未分裂); 子: 总片数
 	ShardIndex   int        `gorm:"column:shard_index;not null;default:0;index:uk_shard,unique" json:"shard_index"`

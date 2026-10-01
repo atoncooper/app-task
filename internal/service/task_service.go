@@ -12,6 +12,8 @@ import (
 	"app-task/internal/model"
 	"app-task/internal/repo"
 
+	"strings"
+
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 )
@@ -51,6 +53,9 @@ type RegisterOptions struct {
 	// CalendarID: business calendar name applied to cron materialization
 	// (empty = none). One-shot trigger_time tasks ignore it.
 	CalendarID string
+	// AlertChannel: notify channel name pushed to when the task finally fails
+	// (empty = no alert). AI RCA is attached automatically when configured.
+	AlertChannel string
 }
 
 func (s *TaskService) RegisterTask(o RegisterOptions) (string, error) {
@@ -83,18 +88,28 @@ func (s *TaskService) RegisterTask(o RegisterOptions) (string, error) {
 	if o.ShardTotal < 0 || o.ShardTotal > 1000 {
 		return "", fmt.Errorf("shard_total out of range (0..1000)")
 	}
+	if o.AlertChannel != "" {
+		ch, err := repo.GetNotifyChannelByName(strings.TrimSpace(o.AlertChannel))
+		if err != nil {
+			return "", fmt.Errorf("alert channel lookup: %w", err)
+		}
+		if ch == nil {
+			return "", fmt.Errorf("alert channel %q not found (create it first)", o.AlertChannel)
+		}
+	}
 	taskID := uuid.NewString()
 	task := &model.Task{
-		TaskID:      taskID,
-		UID:         o.UID,
-		TaskType:    taskType,
-		TriggerTime: triggerTime,
-		Status:      "pending",
-		MaxRetry:    maxRetry,
-		Weight:      weight,
-		Shard:       o.Shard,
-		ShardTotal:  o.ShardTotal,
-		CalendarID:  o.CalendarID,
+		TaskID:       taskID,
+		UID:          o.UID,
+		TaskType:     taskType,
+		TriggerTime:  triggerTime,
+		Status:       "pending",
+		MaxRetry:     maxRetry,
+		Weight:       weight,
+		Shard:        o.Shard,
+		ShardTotal:   o.ShardTotal,
+		CalendarID:   o.CalendarID,
+		AlertChannel: strings.TrimSpace(o.AlertChannel),
 	}
 	if len(o.Payload) > 0 {
 		task.Payload = datatypes.JSON(o.Payload)

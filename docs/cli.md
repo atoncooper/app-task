@@ -143,7 +143,25 @@ at calendar rm cn-holidays
 `--type off` 跳过触发（节假日）；`work` 调休补班（按周一参与星期匹配）。
 建任务时 `at task create --calendar cn-holidays --cron "0 9 * * 1-5"` 引用。
 
-## 8. 分片广播任务
+## 8. AI 日报（digest）
+
+```bash
+at task create --type digest --cron "0 9 * * *"   --payload '{"channel":"ops-ding","period":"daily","top_n":5}'
+```
+
+`period`：daily（24h）| weekly（7d）；`channel` 为 notify 渠道名。AI 未配置时
+发确定性统计模板；失败 TopN/最慢 TopN 随摘要输出。
+
+## 9. 失败告警
+
+```bash
+at task create --executor-url https://exec/run --cron "0 * * * *"   --alert-channel ops-ding
+```
+
+任务最终失败（重试耗尽）推送到该渠道；AI 配置后自动附根因诊断。
+`ai.send_payload_data=true` 时诊断 prompt 才包含任务 payload。
+
+## 10. 分片广播任务
 
 ```bash
 at task create --executor-url https://exec/batch --cron "0 2 * * *" --shard

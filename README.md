@@ -138,6 +138,25 @@ at task create --executor-url https://你的接口/batch --cron "0 2 * * *" --sh
 # 执行器从请求头 X-Shard-Index / X-Shard-Total（或 payload）读片号
 ```
 
+## AI 能力（可选，配了才启用）
+
+配置 `ai.model` + `ai.api_key`（OpenAI 兼容端点，DeepSeek/Qwen/Moonshot 均可）后解锁三个功能，**不配置时平台一切照常**：
+
+| 功能 | 说明 | 降级 |
+|------|------|------|
+| AI 执行日报 | `digest` 任务：cron 到点把昨天/本周的执行情况（成功/失败/慢任务 Top）写成中文摘要推到钉钉/飞书 | 统计模板照发 |
+| 失败根因诊断 | 任务最终失败的告警自动附「AI 诊断」根因 + 修复建议（默认不发送任务 payload，隐私可控） | 纯事实告警照发 |
+| AI 生成 Lua 脚本 | 编辑器「AI 生成」：描述需求 → 代码进编辑器（真实编译校验 + 人工审核后才生效） | 端点关闭 |
+
+```bash
+# .env
+APPTASK__AI__API_KEY=sk-xxx
+# default.yaml 里 ai.base_url 默认 DeepSeek，可换任意 OpenAI 兼容端点
+
+# 每天 9 点 AI 日报
+at task create --type digest --cron "0 9 * * *" --payload '{"channel":"ops-ding","period":"daily"}'
+```
+
 ## 业务日历
 
 cron 表达不了"节假日不发、调休周末要发"？在「业务日历」页维护日期

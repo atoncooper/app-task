@@ -27,7 +27,7 @@ func newCorsTestRouter(t *testing.T, token string) http.Handler {
 	cfg.Security.CORS.AllowOrigins = []string{"http://localhost:3000"}
 	luaExec := executor.NewLuaExecutor(executor.LuaOptions{})
 	emailSvc := service.NewEmailService(cfg)
-	return New(service.NewTaskService(), emailSvc, nil, luaExec, cfg)
+	return New(service.NewTaskService(), emailSvc, nil, nil, luaExec, cfg)
 }
 
 // ── username + password session flow ─────────────────────────────────

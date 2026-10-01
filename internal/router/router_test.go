@@ -55,7 +55,7 @@ func newTestRouter(t *testing.T) (*service.TaskService, http.Handler) {
 	cfg.WebUI.Enabled = true
 	luaExec := executor.NewLuaExecutor(executor.LuaOptions{})
 	emailSvc := service.NewEmailService(cfg)
-	return taskSvc, New(taskSvc, emailSvc, nil, luaExec, cfg)
+	return taskSvc, New(taskSvc, emailSvc, nil, nil, luaExec, cfg)
 }
 
 // testServiceKey is the bootstrap API key seeded into the test router; every

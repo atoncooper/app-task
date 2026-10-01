@@ -189,5 +189,8 @@ docker compose -f docker-compose.test.yml down
 | 循环通知 / 渠道发送失败 | `service/notify.go`（渲染/幂等）+ `service/notify_channels.go`（钉钉/飞书/webhook/Teams 发送；Teams 走 Workflows + Adaptive Card，无加签）+ `repo/notify_channel.go`；钉钉/飞书 HTTP 200 也可能失败（看 body errcode/code） |
 | 分片广播没有切片/父任务卡 running | `service/scheduler.go`（dispatch 头部的分裂 + maybeFinalizeShardParent）+ `repo/task.go`（SplitShardBroadcast/TryFinalizeShardParent）；父任务由子片门控，running 超时清扫已豁免 shard=true 行 |
 | cron 在节假日照跑/调休周六没跑 | `service/bizcalendar.go`（生效规则：work 日期按周一参与星期匹配）+ `repo/biz_calendar.go`；日历删除后任务 fail-loud 停止扩展是刻意设计 |
+| AI 日报没发/没 AI 总结 | `service/digest.go`（无 AI 降级统计模板）+ `service/llm.go`（ai.model/api_key 未配置=AI 关闭）；AI 调用失败投递模板并标注 |
+| 失败没告警/AI 诊断缺失 | `service/scheduler.go`（sendFailureAlert/rcaSection）+ Task.alert_channel；告警只在最终失败发一次，后台 goroutine 不阻塞派发 |
+| AI 生成脚本报编译错误 | `service/ai_script.go`（围栏提取 + executor.CompileForValidation 编译门 + 一次修复重试）+ 会话级限速 5/min |
 | 加入节点失败 | 准入模式（`cluster.admission`）、node_id 字符集、weight 上限（1–1000） |
 | 内存/连接涨 | `rdbms.max_open_conns`（默认 25 ≥ workers）与 `conn_max_idle_time` |

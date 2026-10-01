@@ -27,7 +27,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func New(taskSvc *service.TaskService, emailSvc *service.EmailService, notifySvc *service.NotifyService, luaExec *executor.LuaExecutor, cfg *config.Config) *gin.Engine {
+func New(taskSvc *service.TaskService, emailSvc *service.EmailService, notifySvc *service.NotifyService, llm *service.LLMClient, luaExec *executor.LuaExecutor, cfg *config.Config) *gin.Engine {
 	if !cfg.App.Debug {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -99,7 +99,7 @@ func New(taskSvc *service.TaskService, emailSvc *service.EmailService, notifySvc
 		reveals = newRedisRevealStore(rdb)
 		slog.Info("[WEBUI] redis-backed console state enabled")
 	}
-	r := &Router{taskSvc: taskSvc, emailSvc: emailSvc, notifySvc: notifySvc, luaExec: luaExec, cfg: cfg,
+	r := &Router{taskSvc: taskSvc, emailSvc: emailSvc, notifySvc: notifySvc, scriptGen: service.NewScriptGenService(llm), luaExec: luaExec, cfg: cfg,
 		cipher: cipher, keys: newKeyService(throttle, limiter, reveals), sessStore: sessStore}
 	r.registerRoutes(e)
 	return e
@@ -115,7 +115,8 @@ const (
 type Router struct {
 	taskSvc     *service.TaskService
 	emailSvc    *service.EmailService
-	notifySvc   *service.NotifyService // nil in tests — channel test-send then 500s
+	notifySvc   *service.NotifyService    // nil in tests — channel test-send then 500s
+	scriptGen   *service.ScriptGenService // nil when AI unconfigured — endpoint 503s
 	luaExec     *executor.LuaExecutor
 	cfg         *config.Config
 	cipher      *security.Cipher // nil without SECURITY__API_KEY_ENCRYPTION_KEY

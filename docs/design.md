@@ -241,6 +241,7 @@ GRANT ALL ON app_task.* TO 'app_task'@'172.18.0.%';
 | `scheduler.max_shards` | 32 | 分片广播扇出上限（存活节点数可被任务 shard_total 覆写） |
 | `notify.http_timeout_seconds` | 10 | notify 渠道出站超时 |
 | `notify.rate_limit_per_min` | 18 | notify 渠道限速（钉钉硬上限 20/min） |
+| `ai.*` | 见 §17 | base_url/model/api_key/timeout/max_tokens/send_payload_data；model 空 = AI 关闭 |
 | `cluster.admission` | open | open \| pre_approved |
 | `rdbms.*` | 25/10 池等 | 见 §11 |
 | `redis.*` | 库默认 | 见 §11 |
@@ -291,3 +292,39 @@ cron 表达不了"节假日不发、调休周末要发"。业务日历在 **cron
 - 一次性 trigger_time 任务不受日历影响（用户显式指定日期）。
 - 实现：`service/bizcalendar.go` 自含 5 段 cron 字段解析（dom/month/dow 集合 +
   标准 OR 语义），物化侧一次日历加载 + 逐日匹配，无 N+1 查询。
+
+## 17. AI 能力（LLM 网关 + 三个消费方）
+
+AI 是**增强不是依赖**：`ai.model` / `ai.api_key` 任一未配置，全部 AI 功能降级、
+平台能力零回退。网关（`service/llm.go`）只讲 OpenAI 兼容 chat completions
+（DeepSeek/Qwen/Moonshot/Ollama/OneAPI 通用），api_key 在所有日志/错误路径 mask。
+
+| 功能 | 触发 | AI 关闭时 |
+|------|------|-----------|
+| AI 执行日报（`task_type=digest`） | 用户 cron 编排（可配业务日历） | 确定性统计模板（成功/失败/重试/TopN），**日报永不缺席** |
+| 失败告警 + 根因诊断 | 任务最终失败（重试耗尽），`alert_channel` 渠道推送 | 纯事实告警（无【AI 诊断】段） |
+| AI 生成 Lua 脚本 | 编辑器「AI 生成」按钮 | 按钮仍显示但端点返回 503 |
+
+### 17.1 digest：调度语义全复用
+
+日报做成任务类型而非系统级定时器——时机归用户 cron、互斥归认领（多实例
+不重复发）、投递归 notify 渠道、留痕归 task_log。统计窗口 24h（weekly=7d）：
+成功/失败/重试计数 + 失败 TopN + 最慢 TopN（聚合查询无 N+1）；窗口外数据
+绝不进 prompt（测试锁定）。
+
+### 17.2 失败告警：异步 + 隐私默认关
+
+最终失败（仅此一次，重试过程不发）→ 后台 goroutine 投递（panic 隔离，
+不阻塞派发池）→ `alert_channel` 渠道；AI 配置时附 ≤150 字根因 + 修复建议。
+**隐私**：RCA prompt 默认不含任务 payload（`ai.send_payload_data=true` 才发
+——payload 可能含业务数据）；诊断文本随 task_log 留痕。
+
+### 17.3 AI 生成 Lua：生成 ≠ 上传
+
+端点只产出文本，保存/启用/试运行全部走现有人工路径。质量与安全三闸：
+① System prompt 内嵌沙箱 API 契约（ctx.* 全签名 + 无 os/io + 幂等要求），
+模型只能在给定 API 面内写代码；② 返回代码过**真实编译门**
+（`executor.CompileForValidation`，与人工上传同一解析器），编译失败自动
+喂回错误重试一次，仍失败把错误透给用户；③ admin 门禁 + 会话级限速
+（5 次/分钟）防刷账单。沙箱 VM 本身禁 os/io/debug——AI 写了也跑不了
+系统调用，这是"GLUE 演进"的安全底气。

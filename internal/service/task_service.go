@@ -99,13 +99,13 @@ func (s *TaskService) RegisterTask(o RegisterOptions) (string, error) {
 	}
 	taskID := uuid.NewString()
 	task := &model.Task{
-		TaskID:      taskID,
-		UID:         o.UID,
-		TaskType:    taskType,
-		TriggerTime: triggerTime,
-		Status:      "pending",
-		MaxRetry:    maxRetry,
-		Weight:      weight,
+		TaskID:       taskID,
+		UID:          o.UID,
+		TaskType:     taskType,
+		TriggerTime:  triggerTime,
+		Status:       "pending",
+		MaxRetry:     maxRetry,
+		Weight:       weight,
 		Shard:        o.Shard,
 		ShardTotal:   o.ShardTotal,
 		CalendarID:   o.CalendarID,

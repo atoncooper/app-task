@@ -28,12 +28,15 @@ func GetTaskByID(taskID string) (*model.Task, error) {
 }
 
 // ListTasksByUID returns one uid's tasks newest-first with optional status
-// filter (empty = all statuses), plus the unfiltered total so callers can
+// and domain filters (empty = all), plus the unfiltered total so callers can
 // paginate (limit/offset are applied after filtering).
-func ListTasksByUID(uid int64, status string, limit, offset int) ([]model.Task, int64, error) {
+func ListTasksByUID(uid int64, status, domain string, limit, offset int) ([]model.Task, int64, error) {
 	q := db.DB.Model(&model.Task{}).Where("uid = ?", uid)
 	if status != "" {
 		q = q.Where("status = ?", status)
+	}
+	if domain != "" {
+		q = q.Where("domain = ?", domain)
 	}
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
@@ -84,6 +87,19 @@ func CountTasksByStatus() (map[string]int64, error) {
 		out[r.Status] = r.Count
 	}
 	return out, nil
+}
+
+// DeleteTaskForUID deletes one task owned by uid, but only in a removable
+// state: pending (not yet claimed) or terminal (completed | failed). Rows in
+// flight (dispatching | running) are refused (0 rows affected) so an
+// execution is never orphaned mid-flight — the handler maps that to 409.
+// task_log rows are intentionally kept as the execution audit trail.
+func DeleteTaskForUID(taskID string, uid int64) (int64, error) {
+	res := db.DB.Where(
+		"task_id = ? AND uid = ? AND status IN ?",
+		taskID, uid, []string{"pending", "completed", "failed"},
+	).Delete(&model.Task{})
+	return res.RowsAffected, res.Error
 }
 
 // ConditionalUpdate atomically transitions status only if current == fromStatus.
@@ -302,6 +318,7 @@ func ExtendCronTask(src *model.Task, triggerTime time.Time) (string, bool, error
 			Async:       src.Async,
 			CronExpr:    src.CronExpr,
 			CalendarID:  src.CalendarID,
+			Domain:      src.Domain,
 			Shard:       src.Shard,
 			ShardTotal:  0,
 			MaxRetry:    src.MaxRetry,
@@ -358,6 +375,7 @@ func SplitShardBroadcast(parent *model.Task, total int, now time.Time) (bool, er
 				Weight:       parent.Weight,
 				ShardTotal:   total,
 				ShardIndex:   idx,
+				Domain:       parent.Domain,
 				ParentTaskID: &parent.TaskID,
 			}
 			if err := tx.Create(&child).Error; err != nil {

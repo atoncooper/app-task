@@ -122,7 +122,7 @@ consumer key）。密钥可吊销（立即 401）、可设过期时间。
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `uid` | int | ✓ | 所有者 uid（绑定 key 时必须与之一致，否则 403） |
+| `uid` | int/string | ✓ | 所有者 uid——JSON 数字或数字字符串均可（uid 超出 JS 2^53 安全整数，主应用以字符串发送）；绑定 key 时必须与之一致，否则 403 |
 | `task_type` | string | | `http`（默认）/ `lua` / `notify` |
 | `payload` | object | | 不透明参数，原样透传（≤64 KB） |
 | `executor_url` | string | | http 型任务的第三方执行器地址，**必须是绝对 http/https URL**；`security.executor_block_private_hosts=true` 时拒绝回环/私网/链路本地目标（注册时 DNS 解析、fail-closed） |
@@ -135,6 +135,7 @@ consumer key）。密钥可吊销（立即 401）、可设过期时间。
 | `shard_total` | int | | 分片数，0 = 按存活节点数（≤1000） |
 | `calendar_id` | string | | 业务日历名，cron 物化时生效 |
 | `alert_channel` | string | | 最终失败告警的 notify 渠道名（需先建） |
+| `domain` | string | | 可选域标签（`[a-z0-9_-]{0,64}`，入参自动转小写；非法字符 400）。多业务共用一个调度器时按域隔离列表（`GET /tasks?domain=`），如 `task_quiz`（定时出题）/ `pay`（支付超时委托） |
 
 ```bash
 curl -X POST http://127.0.0.1:8001/tasks/register \
@@ -169,8 +170,26 @@ duration_ms/response/error）。非所有者 403，不存在 404。
 | `limit` | 50 | 1–200，越界 400 |
 | `offset` | 0 | ≥0 |
 | `status` | 全部 | `pending` / `dispatching` / `running` / `completed` / `failed` 之一，否则 400 |
+| `domain` | 全部 | 域标签精确匹配（入参自动转小写，非法字符 400）；空 = 返回全部 |
 
 uid 来源见 §2.3（绑定 key 或 `X-Uid` 头）。
+
+### 4.3.1 任务删除 — `DELETE /tasks/{task_id}`（scope: tasks）
+
+删除调用方自己的任务（uid 归属校验同详情）：
+
+- 可删状态 = `pending`（触发前取消）/ `completed` / `failed`（历史清理）；
+- `dispatching` / `running`（执行中）**409** `task_in_flight` —— 在途执行不被孤儿化，
+  终态后可再删；
+- 他人任务 403、不存在（含已删）404；删除幂等冲突竞态（检查后被调度器认领）
+  以删除时受影响行数为准并按新状态应答；
+- `task_log` 行保留（执行审计溯源），只删 `task` 行。
+
+**200**：
+
+```json
+{"task_id": "uuid", "deleted": true}
+```
 
 ### 4.4 异步回执 — `POST /internal/task/{task_id}/complete`（scope: internal）
 

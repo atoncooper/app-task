@@ -169,6 +169,7 @@ func (r *Router) registerRoutes(e *gin.Engine) {
 	tasks := svc.Group("/tasks")
 	tasks.POST("/register", r.register)
 	tasks.GET("/:task_id", r.detail)
+	tasks.DELETE("/:task_id", r.deleteTask)
 	tasks.GET("", r.list)
 
 	// Async callback: a third-party executor that accepted a task (202) reports

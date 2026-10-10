@@ -21,10 +21,15 @@ import (
 //	pending -> completed (sync success)
 //	failed/any -> pending (retry with next_retry_at)
 type Task struct {
-	ID             int64          `gorm:"primaryKey;autoIncrement" json:"-"`
-	TaskID         string         `gorm:"column:task_id;uniqueIndex;size:64;not null" json:"task_id"`
-	UID            int64          `gorm:"column:uid;index;not null" json:"uid"`                                // owner
-	TaskType       string         `gorm:"column:task_type;size:32;default:http;not null" json:"task_type"`     // http (default) / lua / ...
+	ID       int64  `gorm:"primaryKey;autoIncrement" json:"-"`
+	TaskID   string `gorm:"column:task_id;uniqueIndex;size:64;not null" json:"task_id"`
+	UID      int64  `gorm:"column:uid;index;not null" json:"uid"`                            // owner
+	TaskType string `gorm:"column:task_type;size:32;default:http;not null" json:"task_type"` // http (default) / lua / ...
+	// Domain is an optional caller-defined namespace (e.g. "task_quiz", "pay")
+	// letting one deployment share the scheduler across business domains while
+	// each lists only its own rows (GET /tasks?domain=). Purely organizational:
+	// the scheduler never interprets it and dispatch is unaffected.
+	Domain         string         `gorm:"column:domain;size:64;default:'';index" json:"domain,omitempty"`
 	Payload        datatypes.JSON `gorm:"column:payload;type:json" json:"payload,omitempty"`                   // opaque task parameters, passed to the executor verbatim
 	ExecutorURL    string         `gorm:"column:executor_url;size:512" json:"executor_url,omitempty"`          // http mode: third-party executor endpoint
 	Async          bool           `gorm:"column:async;not null" json:"async"`                                  // true: executor replies 202 and reports via callback

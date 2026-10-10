@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
+	"regexp"
 	"time"
 
 	"app-task/internal/model"
@@ -69,6 +70,22 @@ type RegisterOptions struct {
 	// AlertChannel: notify channel name pushed to when the task finally fails
 	// (empty = no alert). AI RCA is attached automatically when configured.
 	AlertChannel string
+	// Domain: optional caller namespace for cross-domain list scoping
+	// (GET /tasks?domain=...). Validated by ValidateDomain; empty = untagged.
+	Domain string
+}
+
+// domainPattern is the closed charset for RegisterOptions.Domain /
+// GET /tasks?domain=: lowercase letters, digits, underscore and dash, at most
+// 64 chars (mirrors the column size). Empty is allowed (= untagged).
+var domainPattern = regexp.MustCompile(`^[a-z0-9_-]{0,64}$`)
+
+// ValidateDomain reports whether the given domain tag is acceptable.
+func ValidateDomain(domain string) error {
+	if !domainPattern.MatchString(domain) {
+		return fmt.Errorf("domain must match [a-z0-9_-]{0,64}")
+	}
+	return nil
 }
 
 func (s *TaskService) RegisterTask(o RegisterOptions) (string, error) {
@@ -110,6 +127,9 @@ func (s *TaskService) RegisterTask(o RegisterOptions) (string, error) {
 	if o.ShardTotal < 0 || o.ShardTotal > 1000 {
 		return "", fmt.Errorf("shard_total out of range (0..1000)")
 	}
+	if err := ValidateDomain(o.Domain); err != nil {
+		return "", err
+	}
 	if o.AlertChannel != "" {
 		ch, err := repo.GetNotifyChannelByName(strings.TrimSpace(o.AlertChannel))
 		if err != nil {
@@ -132,6 +152,7 @@ func (s *TaskService) RegisterTask(o RegisterOptions) (string, error) {
 		ShardTotal:   o.ShardTotal,
 		CalendarID:   o.CalendarID,
 		AlertChannel: strings.TrimSpace(o.AlertChannel),
+		Domain:       o.Domain,
 	}
 	if len(o.Payload) > 0 {
 		task.Payload = datatypes.JSON(o.Payload)
@@ -146,7 +167,7 @@ func (s *TaskService) RegisterTask(o RegisterOptions) (string, error) {
 	if err := repo.CreateTask(task); err != nil {
 		return "", fmt.Errorf("create task: %w", err)
 	}
-	slog.Info("[JOB] registered", "task_id", taskID, "task_type", taskType, "executor_url", o.ExecutorURL, "async", o.Async, "cron", cronExpr, "max_retry", maxRetry, "weight", weight, "trigger", formatBeijing(triggerTime), "shard", o.Shard, "calendar", o.CalendarID)
+	slog.Info("[JOB] registered", "task_id", taskID, "task_type", taskType, "executor_url", o.ExecutorURL, "async", o.Async, "cron", cronExpr, "max_retry", maxRetry, "weight", weight, "trigger", formatBeijing(triggerTime), "shard", o.Shard, "calendar", o.CalendarID, "domain", o.Domain)
 	return taskID, nil
 }
 

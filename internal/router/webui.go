@@ -11,6 +11,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"app-task/internal/auth"
@@ -197,8 +198,8 @@ func (r *Router) apiCreateTask(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request: " + err.Error()})
 		return
 	}
-	if req.UID == 0 {
-		req.UID = sessionUID(c)
+	if int64(req.UID) == 0 {
+		req.UID = dto.Int64(sessionUID(c))
 	}
 	var triggerTime time.Time
 	if req.CronExpr == "" && req.TriggerTime == "" {
@@ -214,10 +215,11 @@ func (r *Router) apiCreateTask(c *gin.Context) {
 		triggerTime = t
 	}
 	taskID, err := r.taskSvc.RegisterTask(service.RegisterOptions{
-		UID: req.UID, TaskType: req.TaskType, Payload: req.Payload, ExecutorURL: req.ExecutorURL,
+		UID: int64(req.UID), TaskType: req.TaskType, Payload: req.Payload, ExecutorURL: req.ExecutorURL,
 		Async: req.Async, CronExpr: req.CronExpr, TriggerTime: triggerTime,
 		MaxRetry: req.MaxRetry, Weight: req.Weight, Shard: req.Shard, ShardTotal: req.ShardTotal,
 		CalendarID: req.CalendarID, AlertChannel: req.AlertChannel,
+		Domain: strings.ToLower(strings.TrimSpace(req.Domain)),
 	})
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "register failed: " + err.Error()})

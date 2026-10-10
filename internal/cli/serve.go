@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -151,10 +152,23 @@ func runServer(defaultYAML []byte) error {
 	// task_type). Supports http:// and https:// (private CA via ca_file,
 	// self-signed via insecure_skip_verify). Lua: optional built-in executor.
 	// CA 文件惰性加载（首次派发时读取），构造期不做 IO。
+	// Gateway-scoped executor auth: dispatches to the configured gateway hosts
+	// (e.g. APISIX fronting the main app) carry the consumer key so key-auth
+	// protected /internal/* callback endpoints accept them; every other
+	// executor_url stays key-free. Empty key = disabled (legacy behaviour).
+	gatewayHosts := map[string]bool{}
+	for _, h := range strings.Split(cfg.HTTPExecutor.GatewayHosts, ",") {
+		if h = strings.ToLower(strings.TrimSpace(h)); h != "" {
+			gatewayHosts[h] = true
+		}
+	}
 	httpExec := executor.NewHTTPExecutor(executor.HTTPOptions{
 		Timeout:            time.Duration(cfg.HTTPExecutor.TimeoutSeconds) * time.Second,
 		InsecureSkipVerify: cfg.HTTPExecutor.InsecureSkipVerify,
 		CAFile:             cfg.HTTPExecutor.CAFile,
+		GatewayHosts:       gatewayHosts,
+		GatewayHeader:      cfg.HTTPExecutor.GatewayHeader,
+		GatewayApiKey:      cfg.HTTPExecutor.GatewayAPIKey,
 	})
 	luaExec := executor.NewLuaExecutor(executor.LuaOptions{
 		Timeout:      time.Duration(cfg.Lua.TimeoutSeconds) * time.Second,

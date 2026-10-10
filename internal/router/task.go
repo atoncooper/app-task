@@ -39,7 +39,7 @@ func (r *Router) register(c *gin.Context) {
 		return
 	}
 	// Key-bound uid wins: a uid-pinned key may only register for its own uid.
-	if bound, ok := auth.BoundUID(c); ok && bound != req.UID {
+	if bound, ok := auth.BoundUID(c); ok && bound != int64(req.UID) {
 		middleware.RespondError(c, http.StatusForbidden, "forbidden",
 			"task uid does not match the uid bound to the API key")
 		return
@@ -60,10 +60,10 @@ func (r *Router) register(c *gin.Context) {
 		triggerTime = t
 	}
 	taskID, err := r.taskSvc.RegisterTask(service.RegisterOptions{
-		UID: req.UID, TaskType: req.TaskType, Payload: req.Payload, ExecutorURL: req.ExecutorURL,
+		UID: int64(req.UID), TaskType: req.TaskType, Payload: req.Payload, ExecutorURL: req.ExecutorURL,
 		Async: req.Async, CronExpr: req.CronExpr, TriggerTime: triggerTime,
 		MaxRetry: req.MaxRetry, Weight: req.Weight, Shard: req.Shard, ShardTotal: req.ShardTotal,
-		CalendarID: req.CalendarID, AlertChannel: req.AlertChannel,
+		CalendarID: req.CalendarID, AlertChannel: req.AlertChannel, Domain: strings.ToLower(strings.TrimSpace(req.Domain)),
 	})
 	if err != nil {
 		if errors.Is(err, service.ErrInvalidExecutorURL) {
@@ -118,6 +118,7 @@ func (r *Router) detail(c *gin.Context) {
 		"trigger_time": task.TriggerTime.Format(time.RFC3339),
 		"executor_url": task.ExecutorURL,
 		"async":        task.Async,
+		"domain":       task.Domain,
 		"max_retry":    task.MaxRetry,
 		"retry_count":  task.RetryCount,
 		"last_result":  task.LastResult,
@@ -158,7 +159,14 @@ func (r *Router) list(c *gin.Context) {
 			"status must be one of: pending, dispatching, running, completed, failed")
 		return
 	}
-	tasks, total, err := repo.ListTasksByUID(uid, status, limit, offset)
+	// domain: optional cross-domain list scoping (e.g. "task_quiz" on the
+	// scheduled-quiz page). Empty = unfiltered (all the uid's tasks).
+	domain := strings.ToLower(strings.TrimSpace(c.Query("domain")))
+	if err := service.ValidateDomain(domain); err != nil {
+		middleware.RespondError(c, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	tasks, total, err := repo.ListTasksByUID(uid, status, domain, limit, offset)
 	if err != nil {
 		middleware.RespondError(c, http.StatusInternalServerError, "internal_error", err.Error())
 		return
@@ -172,12 +180,62 @@ func (r *Router) list(c *gin.Context) {
 			"trigger_time": j.TriggerTime.Format(time.RFC3339),
 			"executor_url": j.ExecutorURL,
 			"async":        j.Async,
+			"domain":       j.Domain,
 			// Opaque payload passed through for display (e.g. prompt); the
 			// scheduler never interprets it.
 			"payload": j.Payload,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"tasks": out, "total": total, "limit": limit, "offset": offset})
+}
+
+// deleteTask removes one task owned by the caller. Removable states are
+// pending (cancel before trigger) and terminal (completed | failed cleanup);
+// in-flight tasks (dispatching | running) are refused with 409 so an
+// execution is never orphaned mid-flight. Foreign/missing tasks answer 404
+// (no existence leak); task_log rows are kept as the audit trail.
+func (r *Router) deleteTask(c *gin.Context) {
+	uid, ok := resolveUID(c)
+	if !ok {
+		return
+	}
+	taskID := c.Param("task_id")
+	task, err := repo.GetTaskByID(taskID)
+	if err != nil {
+		middleware.RespondError(c, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	if task == nil {
+		middleware.RespondError(c, http.StatusNotFound, "task_not_found", "task not found")
+		return
+	}
+	if task.UID != uid {
+		middleware.RespondError(c, http.StatusForbidden, "forbidden", "not the task owner")
+		return
+	}
+	if task.Status == "dispatching" || task.Status == "running" {
+		middleware.RespondError(c, http.StatusConflict, "task_in_flight",
+			"task is in flight (dispatching/running) and cannot be deleted yet; retry once it settles")
+		return
+	}
+	affected, err := repo.DeleteTaskForUID(taskID, uid)
+	if err != nil {
+		middleware.RespondError(c, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	if affected == 0 {
+		// Raced: the scheduler claimed the task between the check and the
+		// delete. Re-read and answer on the fresh state.
+		cur, _ := repo.GetTaskByID(taskID)
+		if cur != nil && (cur.Status == "dispatching" || cur.Status == "running") {
+			middleware.RespondError(c, http.StatusConflict, "task_in_flight",
+				"task started executing; retry once it settles")
+			return
+		}
+		middleware.RespondError(c, http.StatusNotFound, "task_not_found", "task not found")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"task_id": taskID, "deleted": true})
 }
 
 func uidFromHeader(c *gin.Context) (int64, bool) {

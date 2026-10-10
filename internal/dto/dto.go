@@ -5,12 +5,38 @@
 // service-layer calls; the dto package imports nothing internal.
 package dto
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+	"strconv"
+	"strings"
+)
+
+// Int64 accepts a JSON number OR a numeric string, decoding both exactly.
+// JS clients cannot represent int64 beyond 2^53 as a number without precision
+// loss (system uids exceed it), so the main app sends uids as strings; Go/Java
+// callers send numbers. Wire contract: both spellings are valid wherever a
+// uid appears in a request body.
+type Int64 int64
+
+func (n *Int64) UnmarshalJSON(b []byte) error {
+	s := strings.Trim(string(b), `"`)
+	if s == "null" || s == "" {
+		*n = 0
+		return nil
+	}
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid int64 %s: %w", s, err)
+	}
+	*n = Int64(v)
+	return nil
+}
 
 // RegisterTaskRequest is the POST /tasks/register body (docs/api.md §4.1).
 // UID is required on the service surface; a key-bound uid must match it.
 type RegisterTaskRequest struct {
-	UID          int64           `json:"uid" binding:"required"`
+	UID          Int64           `json:"uid" binding:"required"`
 	TaskType     string          `json:"task_type"`    // http (default) / lua / notify
 	Payload      json.RawMessage `json:"payload"`      // opaque task parameters
 	ExecutorURL  string          `json:"executor_url"` // http mode: third-party executor endpoint
@@ -23,13 +49,16 @@ type RegisterTaskRequest struct {
 	ShardTotal   int             `json:"shard_total"`   // 0 = 按存活节点数
 	CalendarID   string          `json:"calendar_id"`   // 业务日历（cron 任务生效）
 	AlertChannel string          `json:"alert_channel"` // 最终失败告警渠道（notify 渠道名）
+	// Domain: optional caller namespace for cross-domain list scoping
+	// (GET /tasks?domain=...). [a-z0-9_-]{0,64}; empty = untagged.
+	Domain string `json:"domain" binding:"max=64"`
 }
 
 // AdminCreateTaskRequest is the POST /api/tasks body (admin console). Unlike
 // the service surface, uid is optional: 0 attributes the task to the logged-in
 // console user (sessionUID), master-token sessions pass 0 through.
 type AdminCreateTaskRequest struct {
-	UID          int64           `json:"uid"`
+	UID          Int64           `json:"uid"`
 	TaskType     string          `json:"task_type"`
 	Payload      json.RawMessage `json:"payload"`
 	ExecutorURL  string          `json:"executor_url"`
@@ -42,6 +71,7 @@ type AdminCreateTaskRequest struct {
 	ShardTotal   int             `json:"shard_total"`
 	CalendarID   string          `json:"calendar_id"`
 	AlertChannel string          `json:"alert_channel"`
+	Domain       string          `json:"domain"`
 }
 
 // CompleteTaskRequest is the POST /internal/task/:task_id/complete body —

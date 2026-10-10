@@ -189,6 +189,14 @@ type HTTPExecutorConfig struct {
 	TimeoutSeconds     int    `yaml:"timeout_seconds"`      // per-request timeout
 	InsecureSkipVerify bool   `yaml:"insecure_skip_verify"` // opt out of TLS cert validation (self-signed only)
 	CAFile             string `yaml:"ca_file"`              // PEM private CA to trust
+	// Gateway-scoped auth header for main-app callbacks: when an executor_url's
+	// host:port matches one of GatewayHosts (comma-separated, e.g. "apisix:9080"),
+	// the dispatch attaches GatewayHeader: GatewayAPIKey (e.g. the APISIX
+	// consumer key) so key-auth-protected /internal/* endpoints accept the
+	// callback. Hosts outside the list never receive the key. Empty key = off.
+	GatewayHosts  string `yaml:"gateway_hosts"`
+	GatewayHeader string `yaml:"gateway_header"`
+	GatewayAPIKey string `yaml:"gateway_api_key"`
 }
 
 // LuaConfig configures the Lua executor (dynamic scripts, GLUE-style).

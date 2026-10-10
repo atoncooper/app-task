@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -50,6 +51,29 @@ type HTTPOptions struct {
 	// keep-alive reuse when the dispatch pool runs wider than that, forcing
 	// reconnect churn on hot targets. 0 = default 32.
 	IdleConnsPerHost int
+	// Gateway-scoped auth: when an executor_url's host:port is listed in
+	// GatewayHosts (e.g. the APISIX gateway fronting the main app), the
+	// dispatch attaches GatewayHeader: GatewayApiKey so key-auth-protected
+	// /internal/* callback endpoints accept the request. Hosts outside the
+	// list (genuine third-party executors) NEVER receive the credential.
+	// Empty GatewayApiKey (or empty set) = disabled (legacy behaviour).
+	GatewayHosts  map[string]bool
+	GatewayHeader string // header name; "" = "apikey" (APISIX key-auth default)
+	GatewayApiKey string
+}
+
+// gatewayMatch reports whether the raw URL's host:port is in the allow set
+// (case-insensitive). Unparseable URLs never match (dispatch fails later in
+// validateExecutorURL anyway).
+func gatewayMatch(rawURL string, hosts map[string]bool) bool {
+	if len(hosts) == 0 {
+		return false
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return hosts[strings.ToLower(u.Host)]
 }
 
 func NewHTTPExecutor(opts HTTPOptions) *HTTPExecutor {
@@ -125,6 +149,16 @@ func (e *HTTPExecutor) Handler() Handler {
 		// Identify the task to the executor: it needs task_id to report back via
 		// the completion callback / internal/email/send reference_id.
 		req.Header.Set("X-Task-Id", task.ID)
+		// Gateway-scoped auth: only targets on the configured gateway host list
+		// receive the credential (main-app /internal/* callbacks behind APISIX
+		// key-auth). Third-party executors never see the key.
+		if e.opts.GatewayApiKey != "" && gatewayMatch(rawURL, e.opts.GatewayHosts) {
+			name := e.opts.GatewayHeader
+			if name == "" {
+				name = "apikey"
+			}
+			req.Header.Set(name, e.opts.GatewayApiKey)
+		}
 		// 分片广播：执行器按片处理数据的去重/定位键
 		if v, ok := task.Meta["shard_index"]; ok {
 			req.Header.Set("X-Shard-Index", fmt.Sprint(v))

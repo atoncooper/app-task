@@ -87,7 +87,7 @@ ai:
   model: ""                                  # 留空 = 关闭全部 AI 功能（日报降级为统计模板）
   api_key: "${APPTASK__AI__API_KEY}"         # 日志中全程脱敏
   timeout_seconds: 30                        # 单次 LLM 调用超时
-  max_tokens: 1024
+  max_tokens: 4096
   send_payload_data: false                   # 根因分析 prompt 是否包含任务 payload（含业务数据，默认不传）
 
 notification:
@@ -112,6 +112,14 @@ http_executor:
   timeout_seconds: 30            # 单次调用 executor 超时
   insecure_skip_verify: false   # 仅自签名内网 executor 才开(生产禁用)
   ca_file: "${APPTASK__HTTP_EXECUTOR__CA_FILE}"  # 私有 CA PEM 路径(可选;容器部署由 compose 注入 APPTASK__HTTP_EXECUTOR__CA_FILE=/app/pay-certs/ca.crt 信任 app-pay 开发 CA,惰性加载,文件缺失不阻塞启动)
+  # 网关作用域鉴权：executor_url 的 host:port 命中 gateway_hosts（逗号分隔）
+  # 时，派发请求自动附加 gateway_header: gateway_api_key（如 APISIX key-auth
+  # 的 apikey 头），让主应用经网关暴露的 /internal/* 回调端点放行——定时出题
+  # 的 /internal/quiz/generate-llm 即此场景。列表外的第三方执行器永远收不到
+  # 密钥。gateway_api_key 留空 = 关闭（保持旧行为）。
+  gateway_hosts: "${APPTASK__HTTP_EXECUTOR__GATEWAY_HOSTS}"
+  gateway_header: "apikey"
+  gateway_api_key: "${APPTASK__HTTP_EXECUTOR__GATEWAY_API_KEY}"
 
 lua:
   timeout_seconds: 30           # 单次脚本执行超时

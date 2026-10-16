@@ -311,6 +311,12 @@ func TestMySQLSchedulerDispatchEndToEnd(t *testing.T) {
 		db.DB.Model(&model.Task{}).Where("status = ?", "completed").Count(&n)
 		return n == tasksN
 	})
+	// Flush in-flight task_log writes before counting: the success log INSERT
+	// follows the finalize UPDATE in the same dispatch goroutine, so a poller
+	// on another connection can observe every task completed while the last
+	// log rows are still being written. Stop() waits for all dispatch
+	// goroutines (and is idempotent with the deferred Stop).
+	sched.Stop()
 
 	mu.Lock()
 	defer mu.Unlock()

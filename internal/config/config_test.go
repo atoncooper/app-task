@@ -99,7 +99,7 @@ func TestPlaceholderDefaultFile(t *testing.T) {
 	if cfg.RDBMS.URL != "" || cfg.Email.APIKey != "" || cfg.WebUI.Token != "" || cfg.Redis.URL != "" {
 		t.Fatalf("secret fields must be empty without env: %+v", cfg)
 	}
-	if cfg.Scheduler.Workers != 16 || cfg.Scheduler.Weight != 1 || cfg.Server.Port != 8001 {
+	if cfg.Scheduler.Workers != 32 || cfg.Scheduler.Weight != 1 || cfg.Server.Port != 8001 {
 		t.Fatalf("literal defaults drifted: %+v", cfg.Scheduler)
 	}
 }

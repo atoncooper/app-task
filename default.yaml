@@ -56,7 +56,7 @@ redis:
 
 rdbms:
   url: "${APPTASK__RDBMS__URL}"  # mysql dsn of app-task's OWN instance/db (inject via env)
-  max_open_conns: 25          # ≥ workers：派发 goroutine + 邮件 worker + API 共用池
+  max_open_conns: 50          # ≥ workers(32)：派发 goroutine + 邮件 worker + API 共用池
   max_idle_conns: 10
   conn_max_lifetime: 1800     # seconds；定期换连接避免长连接老化
   conn_max_idle_time: 300     # seconds；空闲过久的连接主动关闭（防中间件静默断连）
@@ -68,11 +68,13 @@ rdbms:
   slow_threshold_ms: 500      # 慢查询日志阈值（GORM WARN）
 
 scheduler:
-  interval_seconds: 30          # DB poll interval for due tasks
-  workers: 16                   # dispatch goroutine pool size (parallel claim+dispatch per tick)
-  batch_size: 50                # due tasks claimed per tick
+  interval_seconds: 10          # full-cycle interval (cron extend + reclaim + one claim wave + sweeps);
+                                # between cycles, freed dispatch slots trigger immediate refill waves
+                                # while backlog remains —积压以完成速率排空，不等下一个周期
+  workers: 32                   # dispatch goroutine pool size (parallel dispatches)
+  batch_size: 50                # due tasks claimed per claim wave (refill waves included)
   dispatching_timeout_seconds: 120  # reclaim dispatching claims older than this (crashed instance)
-  per_url_limit: 8              # max concurrent dispatches per executor_url (0 = unlimited)
+  per_url_limit: 16             # max concurrent dispatches per executor_url (0 = unlimited)
   weight: 1                     # 本节点分任务份额（认领上限按 weight/最大存活权重 缩放；manager 等兼职节点调低）
   instance_id: ""               # claim owner identity; empty = hostname+random suffix
   max_shards: 32                # 分片广播扇出上限（按存活节点数分裂，可被任务覆写，硬帽在此）

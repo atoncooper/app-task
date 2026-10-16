@@ -108,9 +108,9 @@ type RDBMSConfig struct {
 // SchedulerConfig tunes the DB-polling dispatch loop. Zero values fall back
 // to the service defaults (see service.NewScheduler).
 type SchedulerConfig struct {
-	IntervalSeconds          int    `yaml:"interval_seconds"`            // DB poll interval for due tasks
+	IntervalSeconds          int    `yaml:"interval_seconds"`            // full-cycle interval; slot-free refills run between cycles
 	Workers                  int    `yaml:"workers"`                     // dispatch goroutine pool size
-	BatchSize                int    `yaml:"batch_size"`                  // due tasks claimed per tick
+	BatchSize                int    `yaml:"batch_size"`                  // due tasks claimed per claim wave
 	DispatchingTimeoutSecond int    `yaml:"dispatching_timeout_seconds"` // stale dispatching claim reclaim age
 	PerURLLimit              int    `yaml:"per_url_limit"`               // max concurrent dispatches per executor_url (0 = unlimited)
 	InstanceID               string `yaml:"instance_id"`                 // claim owner identity (default hostname+rand)

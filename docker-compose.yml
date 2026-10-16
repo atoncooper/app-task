@@ -55,7 +55,7 @@ services:
       - HTTPS_PROXY=${APPTASK_HTTP_PROXY:-}
       - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,backend,apisix,app-auth,app-pay,app-pay-admin,app-cloud,app-board,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,host.docker.internal,.local,.svc,.internal}
     ports:
-      - "127.0.0.1:${APP_TASK_PORT:-8001}:8001"
+      - "0.0.0.0:${APP_TASK_PORT:-8001}:8001"
     volumes:
       - logs:/app/logs
     restart: unless-stopped
@@ -96,7 +96,7 @@ services:
       - HTTPS_PROXY=${APPTASK_HTTP_PROXY:-}
       - NO_PROXY=${APPTASK_NO_PROXY:-localhost,127.0.0.1,::1,backend,apisix,app-auth,app-pay,app-pay-admin,app-cloud,app-board,app-board-mcp,app-task-mysql,mysql,mongo,redis,minio,higress,host.docker.internal,.local,.svc,.internal}
     ports:
-      - "127.0.0.1:${APP_TASK_HA_PORT:-8011}:8001"
+      - "0.0.0.0:${APP_TASK_HA_PORT:-8011}:8001"
     volumes:
       - logs_ha:/app/logs
     restart: unless-stopped

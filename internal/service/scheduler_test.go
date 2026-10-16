@@ -823,3 +823,86 @@ func TestSchedulerWeightClamp(t *testing.T) {
 		t.Fatalf("weight = %d, want clamped to 10000", s.weight)
 	}
 }
+
+// ── 槽位即空即补：积压存在时，完成任务立刻触发下一波认领 ─────────────
+// 不变量（新增并发模型对应）：
+//   - 补位不依赖 tick：interval=1h，任何排空进度只能来自槽位释放触发的
+//     refill 波（老模型在此场景会卡死在首波，直到下一个周期）；
+//   - I1 认领排他：每个任务恰好派发一次（handler 调用数 == 任务数）；
+//   - 池上限不被突破：并发 handler 数 ≤ workers。
+
+func TestScheduler_ContinuousRefill(t *testing.T) {
+	setupTestDB(t)
+	const total, workers = 6, 2
+	var running, maxRunning, handled int32
+	started := make(chan struct{}, total) // 每次 handler 真正跑起来发一个
+	release := make(chan struct{})        // 放行一个 handler（无缓冲：逐个精确放行）
+	reg := executor.NewRegistry()
+	reg.Register("http", executor.Handler(func(ctx context.Context, task executor.Task) error {
+		cur := atomic.AddInt32(&running, 1)
+		for {
+			old := atomic.LoadInt32(&maxRunning)
+			if cur <= old || atomic.CompareAndSwapInt32(&maxRunning, old, cur) {
+				break
+			}
+		}
+		atomic.AddInt32(&handled, 1)
+		started <- struct{}{}
+		<-release
+		atomic.AddInt32(&running, -1)
+		return nil
+	}))
+
+	svc := NewTaskService()
+	for i := 0; i < total; i++ {
+		mustRegister(t, svc, 1, "http", `{}`, "http://gate", false, 0)
+	}
+
+	// interval=1h：没有任何 ticker 扫描可以救场。
+	s := NewScheduler(reg, SchedulerOptions{Interval: time.Hour, Workers: workers})
+	s.Start()
+	defer s.Stop()
+
+	// 首波应占满 workers=2 个槽。
+	for i := 0; i < workers; i++ {
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("first wave started only %d/%d handlers", i, workers)
+		}
+	}
+	// 逐个放行：每次放行后必须有无 tick 的新 handler 补位（refill 生效），
+	// 直到积压排空（还剩 total-workers 个待启动）。
+	for i := 0; i < total-workers; i++ {
+		release <- struct{}{}
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("refill stalled: no new dispatch after %d completions without any tick", i+1)
+		}
+	}
+	// 排空最后 workers 个运行中的 handler（积压已尽，不再期待新启动）。
+	for i := 0; i < workers; i++ {
+		release <- struct{}{}
+	}
+
+	if got := atomic.LoadInt32(&handled); got != total {
+		t.Fatalf("handler invocations = %d, want %d (claim exclusivity)", got, total)
+	}
+	if mr := atomic.LoadInt32(&maxRunning); mr > workers {
+		t.Fatalf("max concurrent dispatches = %d, want <= %d", mr, workers)
+	}
+	// 等最后的 finalize 落库：不允许残留 pending/dispatching。
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var left int64
+		db.DB.Model(&model.Task{}).Where("status IN ?", []string{"pending", "dispatching"}).Count(&left)
+		if left == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("tasks stuck in pending/dispatching: %d", left)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

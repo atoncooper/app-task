@@ -25,13 +25,19 @@ import (
 // work; the scheduler records every execution in task_log and advances the
 // task state machine.
 //
-// Concurrency model: each tick claims a batch of due tasks and runs every
-// dispatch in its own goroutine, bounded by the global slot pool (Workers)
-// and the per-executor_url gates (PerURLLimit). Each dispatch first CLAIMS
-// the task (conditional update pending → dispatching — mutually exclusive
-// across workers AND instances), then runs the handler and finalizes. The
-// tick waits for the batch to drain, so ticks never overlap and the DB scan
-// rate adapts to executor latency.
+// Concurrency model: ONE scheduler goroutine owns all claiming. Every
+// Interval it runs a full cycle (cron extension, takeover, stale-claim
+// reclaim, one claim wave, sweeps); between cycles, whenever the last wave
+// filled its entire request (backlog likely remains), every freed dispatch
+// slot triggers an immediate refill wave sized to the free slot count — the
+// backlog drains at completion rate instead of one batch per interval.
+// Dispatches run in their own goroutines, bounded by the global slot pool
+// (Workers) and the per-executor_url gates (PerURLLimit). Every dispatch
+// CLAIMS first (conditional update pending → dispatching — mutually
+// exclusive across workers AND instances), then runs the handler and
+// finalizes. Waves that come back short (backlog drained) or give claims
+// back (a saturated executor URL) disarm slot-free refills until the next
+// full cycle, so the scan rate adapts to real demand instead of hot-looping.
 //
 // State machine:
 //
@@ -66,6 +72,15 @@ type Scheduler struct {
 	semsMu sync.Mutex
 	sems   map[string]chan struct{}
 
+	// Slot-free refill: while the last wave filled its whole request (backlog
+	// likely remains), each freed dispatch slot pokes the loop to claim the
+	// next wave immediately instead of waiting for the next full cycle.
+	// Coalesced (capacity 1) and gated by refillArmed so an empty backlog or
+	// a saturated executor URL cannot turn completions into a claim/release
+	// hot loop.
+	refill      chan struct{}
+	refillArmed atomic.Bool
+
 	// cluster (optional, wired from the cluster manager) provides dead-node
 	// takeover and weight-proportional claim limits.
 	cluster ClusterView
@@ -88,9 +103,9 @@ func (s *Scheduler) SetClusterView(v ClusterView) { s.cluster = v }
 // SchedulerOptions configures the scheduler. Zero values fall back to
 // production defaults in NewScheduler.
 type SchedulerOptions struct {
-	Interval       time.Duration // DB poll interval (default 30s)
-	Workers        int           // global dispatch concurrency (default 16)
-	BatchSize      int           // due tasks claimed per tick (default 50)
+	Interval       time.Duration // full-cycle interval: maintenance + one claim wave (default 10s)
+	Workers        int           // global dispatch concurrency (default 32)
+	BatchSize      int           // due tasks claimed per claim wave (default 50)
 	DispatchingTTL time.Duration // stale dispatching claim reclaim age (default 2m)
 	PerURLLimit    int           // max concurrent dispatches per executor_url (0 = unlimited)
 	Owner          string        // instance identity for claims (default hostname+rand)
@@ -105,11 +120,11 @@ type SchedulerOptions struct {
 
 // Defaults for zero-valued SchedulerOptions fields.
 const (
-	defaultInterval    = 30 * time.Second
-	defaultWorkers     = 16
+	defaultInterval    = 10 * time.Second
+	defaultWorkers     = 32
 	defaultBatchSize   = 50
 	defaultDispatchTTL = 2 * time.Minute
-	defaultPerURLLimit = 8
+	defaultPerURLLimit = 16
 )
 
 func NewScheduler(reg *executor.Registry, opts SchedulerOptions) *Scheduler {
@@ -155,6 +170,7 @@ func NewScheduler(reg *executor.Registry, opts SchedulerOptions) *Scheduler {
 		weight:         opts.Weight,
 		slots:          make(chan struct{}, opts.Workers),
 		sems:           make(map[string]chan struct{}),
+		refill:         make(chan struct{}, 1),
 	}
 }
 
@@ -194,7 +210,11 @@ func (s *Scheduler) Stats() (workers int, inflight int64) {
 }
 
 func (s *Scheduler) loop() {
-	s.tick() // fire once immediately (catch up after restart)
+	// Initial full cycle, WITHOUT the drain wait: the loop must stay free to
+	// react to slot-free refills while the first wave is still running.
+	s.maintain()
+	s.refillArmed.Store(s.fillWave(nil))
+	s.sweepRunningTimeouts()
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
 	for {
@@ -207,12 +227,43 @@ func (s *Scheduler) loop() {
 			if s.jitter > 0 {
 				time.Sleep(time.Duration(rand.Int63n(int64(s.jitter))))
 			}
-			s.tick()
+			s.maintain()
+			s.refillArmed.Store(s.fillWave(nil))
+			s.sweepRunningTimeouts()
+		case <-s.refill:
+			// A dispatch slot freed while the last wave filled its whole
+			// request: top the pool up right away — the backlog drains at
+			// completion rate instead of one batch per interval.
+			s.refillArmed.Store(s.fillWave(nil))
 		}
 	}
 }
 
 func (s *Scheduler) tick() {
+	s.maintain()
+
+	// 1. Fill the free dispatch slots with one claim wave and wait for THIS
+	// wave to drain, so the synchronous entry point stays deterministic (the
+	// loop's own cycles skip the wait — see loop()). The wave is sized to the
+	// FREE slot count (capped by batch_size and the node's weight share):
+	// claiming more would just saturate the pool and release the excess.
+	batch := &sync.WaitGroup{}
+	s.refillArmed.Store(s.fillWave(batch))
+	batchDone := make(chan struct{})
+	go func() { batch.Wait(); close(batchDone) }()
+	select {
+	case <-batchDone:
+	case <-s.stopCh:
+		slog.Warn("[SCHEDULER] stop during dispatch wave; unfinished claims will be reclaimed")
+	}
+
+	s.sweepRunningTimeouts()
+}
+
+// maintain runs the time-based side of a cycle: cron extension, dead-node
+// takeover, stale-claim reclaim. Cheap indexed queries, safe to run every
+// cycle; refill waves deliberately skip it (they only top the pool up).
+func (s *Scheduler) maintain() {
 	// 0. Extend recurring (cron) tasks into their next occurrence.
 	s.extendCronTasks()
 
@@ -237,16 +288,46 @@ func (s *Scheduler) tick() {
 	} else if n > 0 {
 		slog.Warn("[SCHEDULER] reclaimed stale dispatching claims", "count", n)
 	}
+}
 
-	// 1. Claim the due batch (transactional, SKIP LOCKED on MySQL) and
-	// dispatch it in parallel goroutines (bounded by the global slot pool +
-	// per-URL gates), then wait for it to drain, so ticks never overlap and a
-	// slow executor delays the next scan instead of piling up work. The claim
-	// limit is capped at the pool size: claiming more would just saturate the
-	// pool and release the excess right back.
-	claimLimit := s.batchSize
-	if claimLimit > s.workers {
-		claimLimit = s.workers
+// sweepRunningTimeouts fails async tasks stuck in running without a callback
+// (bounded-latency fallback for lost callbacks; a late callback is idempotent).
+func (s *Scheduler) sweepRunningTimeouts() {
+	running, err := repo.ListRunning(50)
+	if err != nil {
+		slog.Error("[SCHEDULER] list running failed", "err", err)
+		return
+	}
+	for _, j := range running {
+		if time.Since(j.UpdatedAt) > 10*time.Minute {
+			slog.Warn("[SCHEDULER] running timeout (>10m), marking failed", "task_id", j.TaskID, "age", time.Since(j.UpdatedAt))
+			if _, _ = repo.ConditionalUpdate(j.TaskID, "running", "failed", nil); true {
+				s.writeLog(&j, "timeout", 0, "", "no callback within 10m")
+			}
+		}
+	}
+}
+
+// fillWave claims enough due tasks to top the dispatch pool up to capacity
+// (bounded by BatchSize and the node's weight share) and starts every claimed
+// task. batch, when non-nil, tracks the spawned dispatch goroutines so the
+// caller can wait for the wave to drain. Returns true only when the wave
+// filled its ENTIRE request — the one state in which slot-free refills stay
+// armed:
+//   - claimed < requested → the backlog is drained; the next scan happens on
+//     the next full cycle (same freshness guarantee as the tick-only model);
+//   - any claimed task was given back (per-URL gate saturated) → re-arming
+//     would hot-loop claim/release against the same saturated URL; the next
+//     full cycle retries it instead.
+func (s *Scheduler) fillWave(batch *sync.WaitGroup) bool {
+	// Size the wave to the FREE slot count: every claimed task is started
+	// synchronously below, so a wave can never overcommit the pool.
+	claimLimit := s.workers - len(s.slots)
+	if claimLimit <= 0 {
+		return true // at capacity: refill again as soon as a slot frees
+	}
+	if claimLimit > s.batchSize {
+		claimLimit = s.batchSize
 	}
 	// Weight-proportional claiming: scale down by ownWeight / maxAliveWeight
 	// so a low-weight node (e.g. a box that also runs the manager duties)
@@ -265,98 +346,104 @@ func (s *Scheduler) tick() {
 	claimed, err := repo.ClaimTasksBatch(claimLimit, s.owner, time.Now().UTC())
 	if err != nil {
 		slog.Error("[SCHEDULER] claim due batch failed", "err", err)
+		return false
 	}
-	if len(claimed) > 0 {
-		var batch sync.WaitGroup
-		for i := range claimed {
-			batch.Add(1)
-			s.wg.Add(1)
-			go func(t *model.Task) {
-				defer s.wg.Done()
-				defer batch.Done()
-				s.dispatch(t)
-			}(&claimed[i])
-		}
-		batchDone := make(chan struct{})
-		go func() { batch.Wait(); close(batchDone) }()
-		select {
-		case <-batchDone:
-		case <-s.stopCh:
-			slog.Warn("[SCHEDULER] stop during dispatch batch; unfinished claims will be reclaimed")
+	if len(claimed) == 0 {
+		return false // nothing due: the next scan happens on the next full cycle
+	}
+	started := 0
+	for i := range claimed {
+		if s.tryStart(&claimed[i], batch) {
+			started++
 		}
 	}
-
-	// 2. Async tasks stuck in running without a callback -> timeout -> failed.
-	running, err := repo.ListRunning(50)
-	if err != nil {
-		slog.Error("[SCHEDULER] list running failed", "err", err)
-	}
-	for _, j := range running {
-		if time.Since(j.UpdatedAt) > 10*time.Minute {
-			slog.Warn("[SCHEDULER] running timeout (>10m), marking failed", "task_id", j.TaskID, "age", time.Since(j.UpdatedAt))
-			if _, _ = repo.ConditionalUpdate(j.TaskID, "running", "failed", nil); true {
-				s.writeLog(&j, "timeout", 0, "", "no callback within 10m")
-			}
-		}
-	}
+	return started == len(claimed) && len(claimed) == claimLimit
 }
 
-// dispatch runs one due task: acquire the global slot and the per-URL slot
-// (both non-blocking — a saturated pool or executor leaves the task pending
-// for the next tick instead of hoarding), claim it (pending → dispatching,
-// mutually exclusive across workers/instances), execute, finalize.
-func (s *Scheduler) dispatch(task *model.Task) {
-	// 分片广播触发行：分裂后由子任务执行，本行转为 running 等全部子片终态。
-	// 存活节点数 <=1 或分裂失败（认领丢失）时不执行——认领丢失意味着该行
-	// 已被回收重派，由新的持有者重新分裂。
-	if task.Shard && task.ParentTaskID == nil {
-		n := s.shardCount(task)
-		if n > 1 {
-			ok, err := repo.SplitShardBroadcast(task, n, time.Now().UTC())
-			if err != nil {
-				s.markFailedOrRetry(task, fmt.Errorf("shard split: %w", err), time.Now())
-				return
-			}
-			if !ok {
-				s.logOrphan(task, "broadcast split (claim superseded)")
-				return
-			}
-			s.writeLog(task, "accepted", 0, fmt.Sprintf("broadcast: %d shards", n), "")
-			slog.Info("[SCHEDULER] shard broadcast split", "task_id", task.TaskID, "shards", n)
-			return
-		}
-		// n <= 1：退化为普通执行（本行已是普通任务语义）
-	}
-	// Fencing: every transition below is guarded by this claim token, so a
-	// stale holder (stalled past the dispatching TTL, claim reclaimed and
-	// re-dispatched by another instance) can never clobber the newer claim —
-	// its result is discarded as orphaned.
+// tryStart starts one claimed task. Shard-broadcast trigger rows split inline
+// and never occupy a dispatch slot (the child shards become ordinary pending
+// tasks). Everything else takes the global slot and the per-URL gate
+// synchronously — both non-blocking; a saturated gate releases the claim so
+// the task stays immediately due (no executor fire, no retry counted) — and
+// runs the handler in its own goroutine. ok=false means the row did not enter
+// the pool (split consumed it, or a gate released the claim).
+func (s *Scheduler) tryStart(task *model.Task, batch *sync.WaitGroup) bool {
 	token := task.ClaimToken
-	// Global pool bound. Already claimed by this tick's batch — a saturated
-	// pool/executor releases the claim so the task stays immediately due
-	// (no executor fire, no retry counted, no 2-minute reclaim wait).
+	if task.Shard && task.ParentTaskID == nil && s.splitShard(task) {
+		return false
+	}
+	// Global pool bound.
 	select {
 	case s.slots <- struct{}{}:
-		defer func() { <-s.slots }()
 	default:
 		if _, err := repo.ReleaseClaim(task.TaskID, token); err != nil {
 			slog.Warn("[SCHEDULER] release claim failed", "task_id", task.TaskID, "err", err)
 		}
-		return // pool saturated: task back to pending, retried next tick
+		return false // pool raced full (waves are sized to free slots — belt and suspenders)
 	}
 	// Per-executor bound.
 	releaseURL, ok := s.tryAcquireURL(task)
 	if !ok {
+		<-s.slots
 		if _, err := repo.ReleaseClaim(task.TaskID, token); err != nil {
 			slog.Warn("[SCHEDULER] release claim failed", "task_id", task.TaskID, "err", err)
 		}
-		return // this executor is saturated: task back to pending
+		return false // this executor is saturated: task back to pending
 	}
-	defer releaseURL()
-
 	s.inflight.Add(1)
-	defer s.inflight.Add(-1)
+	if batch != nil {
+		batch.Add(1)
+	}
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		if batch != nil {
+			defer batch.Done()
+		}
+		defer func() {
+			<-s.slots
+			s.inflight.Add(-1)
+			s.signalRefill()
+		}()
+		defer releaseURL()
+		s.runDispatch(task, token)
+	}()
+	return true
+}
 
+// splitShard splits a shard-broadcast trigger row into its child shards.
+// Reports whether the row was consumed by the split: false means degenerate
+// to a normal execution (single alive node / shard_total <= 1) and the caller
+// dispatches it normally; a failed split is finalized (retry/failed) right
+// here, which also consumes the row.
+func (s *Scheduler) splitShard(task *model.Task) bool {
+	// 分片广播触发行：分裂后由子任务执行，本行转为 running 等全部子片终态。
+	// 存活节点数 <=1 或分裂失败（认领丢失）时不执行——认领丢失意味着该行
+	// 已被回收重派，由新的持有者重新分裂。
+	n := s.shardCount(task)
+	if n <= 1 {
+		return false // 退化为普通执行（本行已是普通任务语义）
+	}
+	ok, err := repo.SplitShardBroadcast(task, n, time.Now().UTC())
+	if err != nil {
+		s.markFailedOrRetry(task, fmt.Errorf("shard split: %w", err), time.Now())
+		return true
+	}
+	if !ok {
+		s.logOrphan(task, "broadcast split (claim superseded)")
+		return true
+	}
+	s.writeLog(task, "accepted", 0, fmt.Sprintf("broadcast: %d shards", n), "")
+	slog.Info("[SCHEDULER] shard broadcast split", "task_id", task.TaskID, "shards", n)
+	return true
+}
+
+// runDispatch executes one claimed task and finalizes it. The caller holds
+// the global slot and the per-URL gate; every transition below is fenced by
+// the claim token minted at claim time, so a stale holder (stalled past the
+// dispatching TTL, claim reclaimed and re-dispatched by another instance) can
+// never clobber the newer claim — its result is discarded as orphaned.
+func (s *Scheduler) runDispatch(task *model.Task, token string) {
 	start := time.Now()
 	h, ok := s.registry.Handler(task.TaskType)
 	if !ok {
@@ -385,6 +472,19 @@ func (s *Scheduler) dispatch(task *model.Task) {
 		return
 	}
 	s.markFailedOrRetry(task, err, start)
+}
+
+// signalRefill pokes the scheduler loop that a dispatch slot freed. Coalesced
+// (capacity-1 channel) and gated by refillArmed: signals are only sent while
+// the last wave filled its entire request, so completions cannot spin the
+// claim loop against an empty backlog or a saturated executor URL.
+func (s *Scheduler) signalRefill() {
+	if s.refillArmed.Load() {
+		select {
+		case s.refill <- struct{}{}:
+		default:
+		}
+	}
 }
 
 // sendFailureAlert pushes a final-failure alert through the task's channel,

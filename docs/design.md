@@ -27,7 +27,7 @@
 - 引入成本：raft 库 + WAL + 稳定成员列表 + ≥3 节点仲裁，与「单二进制、
   自带 MySQL、零额外组件」的形态冲突；
 - 选主换来的只有「秒级 failover」和「follower 不空转」，而本调度器粒度是
-  30s、空扫描 ~0.3 QPS——收益远小于成本。
+  10s、空扫描 ~1 QPS 且积压期间以完成速率自适应补位——收益远小于成本。
 
 **重新评估的触发条件**（满足其一再议）：调度状态搬出 MySQL（纯内存调度）、
 failover 要求亚秒级、多区域 active-active 无法共享 MySQL。
@@ -103,7 +103,11 @@ pending ──claim──► dispatching ──► completed        (同步 2xx)
         └── 回收：dispatching 超过 TTL(默认 120s) 或 所属节点被判死
 ```
 
-每个 tick（默认 30s，实例间带随机抖动错峰）：
+调度是**单认领者模型**：只有调度循环认领。每个完整周期（默认 10s，实例间带
+随机抖动错峰）执行下述 1–6 步；**周期之间，只要上一波认领填满了请求（积压
+可能仍在），每个派发槽位释放都立即触发一次补位认领波**（认领量 = 当前空闲
+槽位数）——积压以完成速率排空，而不是每周期一批。波次没填满（积压已排空）
+或发生过 URL 闸释放 → 解除补位武装、退回周期扫描，杜绝 claim/release 热循环：
 
 1. **cron 延展**：`ExtendCronTask` 单事务「条件占用 `cron_next_task_id`
    （预写 newID）+ INSERT 下一条」——并发延展绝不产生孤儿重复；
@@ -112,10 +116,10 @@ pending ──claim──► dispatching ──► completed        (同步 2xx)
 3. **批量认领**：`ClaimTasksBatch` 在一个事务里读取候选
    （MySQL 上 `FOR UPDATE SKIP LOCKED`，并发实例读到互不相交的候选集）
    并整体翻转 `pending → dispatching`，每批铸造一个 fencing token；
-   认领上限 = `min(batch_size, workers) × ceil(本机 weight ÷ 集群最大存活权重)`；
+   单波认领上限 = `min(batch_size, 当前空闲槽位) × ceil(本机 weight ÷ 集群最大存活权重)`；
 4. **并行派发**：每个已认领任务一个 goroutine，受两级闸门约束——
    全局池（`workers`）+ 按 executor_url 的并发闸（`per_url_limit`）；
-   池/闸饱和 → **释放认领**（任务回 pending，下个 tick 再试，不算失败）；
+   池/闸饱和 → **释放认领**（任务回 pending，下一波/下个周期再试，不算失败）；
 5. **finalize**：全部带 fencing（`WHERE status='dispatching' AND
    claim_token=本批 token`）并清空认领字段；执行结果写 `task_log` 溯源；
 6. **超时兜底**：`running` 超 10 分钟无回调 → failed（迟到的回调幂等返回
@@ -156,7 +160,7 @@ token 且匹配当前认领才生效：
 ## 6. 权重分摊
 
 - 配置：`scheduler.weight`（默认 1）；权重经心跳写入名册，**集群动态感知**；
-- 公式：`本 tick 认领上限 = min(batch_size, workers) × ceil(weight ÷ 集群最大存活权重)`；
+- 公式：`单波认领上限 = min(batch_size, 当前空闲槽位) × ceil(weight ÷ 集群最大存活权重)`；
 - 性质：全等权重=不缩放；最大权重节点宕机 → 分母自动缩小 → 存活节点回满；
 - 边界：权重是**容量上限的相对缩放**（任务少时先到先得），不是严格公平
   队列——按流维度的严格公平是预留的 SCFQ 队列（`task.weight`，M4）的职责。
@@ -274,11 +278,11 @@ GRANT ALL ON app_task.* TO 'app_task'@'172.18.0.%';
 
 | 配置 | 默认 | 说明 |
 |------|------|------|
-| `scheduler.interval_seconds` | 30 | 轮询间隔 |
-| `scheduler.workers` | 16 | 全局派发并发 |
-| `scheduler.batch_size` | 50 | 每 tick 认领上限基数 |
+| `scheduler.interval_seconds` | 10 | 完整周期间隔；周期之间槽位释放即触发补位认领波 |
+| `scheduler.workers` | 32 | 全局派发并发 |
+| `scheduler.batch_size` | 50 | 单波认领上限基数 |
 | `scheduler.dispatching_timeout_seconds` | 120 | dispatching 认领回收时长 |
-| `scheduler.per_url_limit` | 8 | 单 executor_url 并发闸 |
+| `scheduler.per_url_limit` | 16 | 单 executor_url 并发闸 |
 | `scheduler.weight` | 1 | 本节点派发份额 |
 | `scheduler.instance_id` | hostname+rand | 节点身份（owner/名册共用） |
 | `scheduler.max_shards` | 32 | 分片广播扇出上限（存活节点数可被任务 shard_total 覆写） |

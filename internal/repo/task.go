@@ -9,10 +9,22 @@ import (
 	"app-task/internal/db"
 	"app-task/internal/model"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+// retryableLockError reports whether err is a MySQL lock-state error that
+// InnoDB has already rolled back and expects the CLIENT to retry: 1213
+// (ER_LOCK_DEADLOCK) and 1205 (ER_LOCK_WAIT_TIMEOUT). Concurrent claim waves
+// are exactly this case — a retried wave reads a fresh, disjoint candidate
+// set. Never true on other dialects (SQLite tests).
+func retryableLockError(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	return errors.As(err, &mysqlErr) &&
+		(mysqlErr.Number == 1213 || mysqlErr.Number == 1205)
+}
 
 func CreateTask(j *model.Task) error {
 	return db.DB.Create(j).Error
@@ -160,58 +172,70 @@ func ClaimTask(taskID, owner string, now time.Time) (string, bool, error) {
 //   - Other dialects (SQLite tests) skip the locking clause; mutual exclusion
 //     comes from the transaction + status filter.
 func ClaimTasksBatch(limit int, owner string, now time.Time) ([]model.Task, error) {
-	var claimed []model.Task
-	err := db.DB.Transaction(func(tx *gorm.DB) error {
-		q := tx.Where(
-			"status = ? AND trigger_time <= ? AND (next_retry_at IS NULL OR next_retry_at <= ?)",
-			"pending", now, now,
-		).Order("trigger_time ASC").Limit(limit)
-		if tx.Dialector.Name() == "mysql" {
-			q = q.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"})
-		}
-		var candidates []model.Task
-		if err := q.Find(&candidates).Error; err != nil {
-			return err
-		}
-		if len(candidates) == 0 {
+	// InnoDB deadlock (1213) / lock wait timeout (1205) roll the whole
+	// transaction back and expect the client to retry. Concurrent claim waves
+	// hit this under load; a retried wave is safe by construction — the
+	// status='pending' filter re-reads fresh state, so retries can neither
+	// double-claim nor miss. Bounded attempts keep a pathological contention
+	// storm from spinning; a final failure just leaves tasks pending for the
+	// next wave (at-least-once, no correctness impact).
+	const claimLockRetries = 3
+	for attempt := 0; ; attempt++ {
+		var claimed []model.Task
+		err := db.DB.Transaction(func(tx *gorm.DB) error {
+			q := tx.Where(
+				"status = ? AND trigger_time <= ? AND (next_retry_at IS NULL OR next_retry_at <= ?)",
+				"pending", now, now,
+			).Order("trigger_time ASC").Limit(limit)
+			if tx.Dialector.Name() == "mysql" {
+				q = q.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"})
+			}
+			var candidates []model.Task
+			if err := q.Find(&candidates).Error; err != nil {
+				return err
+			}
+			if len(candidates) == 0 {
+				return nil
+			}
+			ids := make([]string, 0, len(candidates))
+			for i := range candidates {
+				ids = append(ids, candidates[i].TaskID)
+			}
+			// The rows are locked (MySQL) / the tx isolated (SQLite): every
+			// candidate still reads status=pending, so the update normally claims
+			// all of them. One fencing token per batch — every re-claim mints a
+			// fresh token, which is what finalizes are fenced against.
+			batchToken := uuid.NewString()
+			if err := tx.Model(&model.Task{}).
+				Where("task_id IN ? AND status = ?", ids, "pending").
+				Updates(map[string]any{
+					"status":      StatusDispatching,
+					"owner":       owner,
+					"claimed_at":  now,
+					"claim_token": batchToken,
+					"updated_at":  now,
+				}).Error; err != nil {
+				return err
+			}
+			// Re-select by token instead of trusting the candidate list: only rows
+			// THIS transaction actually flipped (token matches) may be dispatched.
+			// If a concurrent claimant had already taken some candidates (possible
+			// only without the locking clause), they are silently dropped here —
+			// correctness never depends on the lock, only on the status filter +
+			// token readback.
+			if err := tx.Where("owner = ? AND claim_token = ?", owner, batchToken).
+				Find(&claimed).Error; err != nil {
+				return err
+			}
 			return nil
+		})
+		if err == nil {
+			return claimed, nil
 		}
-		ids := make([]string, 0, len(candidates))
-		for i := range candidates {
-			ids = append(ids, candidates[i].TaskID)
+		if attempt >= claimLockRetries || !retryableLockError(err) {
+			return nil, err
 		}
-		// The rows are locked (MySQL) / the tx isolated (SQLite): every
-		// candidate still reads status=pending, so the update normally claims
-		// all of them. One fencing token per batch — every re-claim mints a
-		// fresh token, which is what finalizes are fenced against.
-		batchToken := uuid.NewString()
-		if err := tx.Model(&model.Task{}).
-			Where("task_id IN ? AND status = ?", ids, "pending").
-			Updates(map[string]any{
-				"status":      StatusDispatching,
-				"owner":       owner,
-				"claimed_at":  now,
-				"claim_token": batchToken,
-				"updated_at":  now,
-			}).Error; err != nil {
-			return err
-		}
-		// Re-select by token instead of trusting the candidate list: only rows
-		// THIS transaction actually flipped (token matches) may be dispatched.
-		// If a concurrent claimant had already taken some candidates (possible
-		// only without the locking clause), they are silently dropped here —
-		// correctness never depends on the lock, only on the status filter +
-		// token readback.
-		if err := tx.Where("owner = ? AND claim_token = ?", owner, batchToken).
-			Find(&claimed).Error; err != nil {
-			return err
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
 	}
-	return claimed, nil
 }
 
 // ReleaseClaim returns a claimed (dispatching) task to pending WITHOUT

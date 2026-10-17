@@ -163,12 +163,14 @@ func runServer(defaultYAML []byte) error {
 		}
 	}
 	httpExec := executor.NewHTTPExecutor(executor.HTTPOptions{
-		Timeout:            time.Duration(cfg.HTTPExecutor.TimeoutSeconds) * time.Second,
-		InsecureSkipVerify: cfg.HTTPExecutor.InsecureSkipVerify,
-		CAFile:             cfg.HTTPExecutor.CAFile,
-		GatewayHosts:       gatewayHosts,
-		GatewayHeader:      cfg.HTTPExecutor.GatewayHeader,
-		GatewayApiKey:      cfg.HTTPExecutor.GatewayAPIKey,
+		Timeout:                time.Duration(cfg.HTTPExecutor.TimeoutSeconds) * time.Second,
+		InsecureSkipVerify:     cfg.HTTPExecutor.InsecureSkipVerify,
+		CAFile:                 cfg.HTTPExecutor.CAFile,
+		GatewayHosts:           gatewayHosts,
+		GatewayHeader:          cfg.HTTPExecutor.GatewayHeader,
+		GatewayApiKey:          cfg.HTTPExecutor.GatewayAPIKey,
+		BreakerThreshold:       cfg.HTTPExecutor.BreakerThreshold,
+		BreakerCooldownSeconds: cfg.HTTPExecutor.BreakerCooldownSeconds,
 	})
 	luaExec := executor.NewLuaExecutor(executor.LuaOptions{
 		Timeout:      time.Duration(cfg.Lua.TimeoutSeconds) * time.Second,

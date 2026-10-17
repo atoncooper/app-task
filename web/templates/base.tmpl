@@ -1,4 +1,4 @@
-{{define "content"}}{{end}}<!DOCTYPE html>
+{{define "content"}}{{end}}{{define "csrf_field"}}<input type="hidden" name="csrf_token" value="{{$.CSRF}}">{{end}}<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">

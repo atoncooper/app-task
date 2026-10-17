@@ -11,6 +11,7 @@
   <div class="panel-heading panel-head"><span class="panel-title">运行参数（payload）</span><span class="muted">同步执行 · 结果落 script_run</span></div>
   <div class="panel-body" style="padding-bottom:0">
     <form method="post" action="/console/scripts/{{.ScriptID}}/run" class="editor-form">
+      {{template "csrf_field" $}}
       <div class="code-editor cm-host" data-code-editor="json" style="height:220px">
         <textarea name="payload" spellcheck="false" autocomplete="off" autocapitalize="off">{{.Payload}}</textarea>
       </div>

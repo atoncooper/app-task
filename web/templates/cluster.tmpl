@@ -70,6 +70,7 @@
         <h4 class="modal-title" id="cluster-join-title">加入节点</h4>
       </div>
       <form method="post" action="/console/cluster/join">
+        {{template "csrf_field" $}}
         <div class="modal-body">
           <div class="form-group">
             <label>node_id（2–64 字符，将成为 task.owner）</label>

@@ -26,6 +26,7 @@
         <td class="op-cell">
           {{if .Active}}
           <form method="post" action="/console/apikeys/{{.KeyID}}/revoke" class="inline-form" onsubmit="return confirm('确认吊销密钥 {{.Name}}？使用它的调用将立即 401。')">
+            {{template "csrf_field" $}}
             <button class="btn btn-danger btn-xs" type="submit">吊销</button>
           </form>
           {{end}}
@@ -47,6 +48,7 @@
         <h4 class="modal-title" id="apikey-modal-title">生成 API 密钥</h4>
       </div>
       <form method="post" action="/console/apikeys">
+        {{template "csrf_field" $}}
         <div class="modal-body">
           <div class="form-group">
             <label>名称（1–64 字符，全局唯一，如 executor-1）</label>

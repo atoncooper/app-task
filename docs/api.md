@@ -191,6 +191,13 @@ uid 来源见 §2.3（绑定 key 或 `X-Uid` 头）。
 {"task_id": "uuid", "deleted": true}
 ```
 
+**幂等键（4.4 / 4.5 / 4.6 通用）**：`security.idempotency.enabled=true` 时，
+写端点接受可选请求头 `Idempotency-Key: <≤200 字符不透明串>`。同一 API 凭据
++ 同一 key 的重复请求在 TTL 内（默认 600s）直接重放首个 **2xx** 响应并附
+`Idempotency-Replayed: true`，不再产生第二次副作用；首次执行尚未完成时
+并发重复请求返回 **409**；**5xx 不缓存**（瞬态失败，重试会真实执行）。
+默认关闭——执行面本就 at-least-once（`X-Task-Id` 去重 + 邮件唯一约束）。
+
 ### 4.4 异步回执 — `POST /internal/task/{task_id}/complete`（scope: internal）
 
 第三方异步执行器报告终态（`running` → `completed` | `failed`）：

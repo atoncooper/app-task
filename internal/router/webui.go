@@ -19,6 +19,7 @@ import (
 	"app-task/internal/dto"
 	"app-task/internal/model"
 	"app-task/internal/repo"
+	"app-task/internal/router/middleware"
 	"app-task/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -42,8 +43,8 @@ func (r *Router) registerWebuiRoutes(e *gin.Engine, cfg *config.Config, authr *a
 	// Login/logout sit OUTSIDE the gate: login must be reachable without
 	// credentials (it IS the credential check), and logout authenticates with
 	// the very session it invalidates.
-	e.POST("/api/login", authr.Login)
-	e.POST("/api/logout", authr.Logout)
+	e.POST("/api/login", middleware.SameOrigin(cfg.Security.CORS.AllowOrigins), authr.Login)
+	e.POST("/api/logout", middleware.SameOrigin(cfg.Security.CORS.AllowOrigins), authr.Logout)
 
 	api := e.Group("/api", authr.Middleware())
 	api.GET("/info", r.apiInfo)

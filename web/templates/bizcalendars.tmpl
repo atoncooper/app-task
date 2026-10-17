@@ -22,6 +22,7 @@
         <td class="op-cell">
           <form method="post" action="/console/calendars/{{.Name}}/delete" class="inline-form"
                 onsubmit="return confirm('确定删除日历 {{.Name}}？引用它的 cron 任务将停止扩展（fail-loud）。');">
+            {{template "csrf_field" $}}
             <button class="btn btn-danger btn-xs" type="submit">删除</button>
           </form>
         </td>
@@ -45,6 +46,7 @@
         <td>{{.DayTypeText}} <span class="cell-sub">{{.DayType}}</span></td>
         <td class="op-cell">
           <form method="post" action="/console/calendars/{{$.Selected}}/dates/{{.Date}}/delete" class="inline-form">
+            {{template "csrf_field" $}}
             <button class="btn btn-danger btn-xs" type="submit">移除</button>
           </form>
         </td>
@@ -56,6 +58,7 @@
   </table>
   <div class="panel-body">
     <form method="post" action="/console/calendars/{{.Selected}}/dates" class="form-inline">
+      {{template "csrf_field" $}}
       <input type="date" name="date" class="form-control" required>
       <select name="day_type" class="form-control">
         <option value="off">off（休：跳过触发）</option>
@@ -72,6 +75,7 @@
   <div class="panel-heading panel-head"><span class="panel-title">新建日历</span></div>
   <div class="panel-body">
     <form method="post" action="/console/calendars" class="form-inline">
+      {{template "csrf_field" $}}
       <input type="text" name="name" class="form-control" placeholder="名称（如 cn-holidays）" required>
       <input type="text" name="description" class="form-control" placeholder="说明（如 中国法定节假日 2026）" size="40">
       <button type="submit" class="btn btn-primary">创建</button>

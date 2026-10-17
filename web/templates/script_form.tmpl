@@ -91,6 +91,7 @@
 
 <div class="panel panel-default">
   <form method="post" action="/console/scripts" class="editor-form">
+    {{template "csrf_field" $}}
     {{if .Edit}}<input type="hidden" name="edit" value="1">{{end}}
     {{if .Edit}}<input type="hidden" name="script_id" value="{{.ScriptID}}">{{end}}
     <div class="script-meta">

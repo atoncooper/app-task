@@ -44,16 +44,17 @@ func TestSecretsCRUDAndCtxSecretE2E(t *testing.T) {
 		"Content-Type": "application/x-www-form-urlencoded",
 		"Cookie":       admin["Cookie"],
 	}
+	csrf := consoleCSRF(t, h, admin["Cookie"])
 
 	// create
 	w := doJSON(h, "POST", "/console/secrets",
-		"name=gh_token&description=github&value=tok-abc-123", form)
+		"name=gh_token&description=github&value=tok-abc-123&csrf_token="+csrf, form)
 	if w.Code != http.StatusSeeOther || !strings.Contains(w.Header().Get("Location"), "ok=") {
 		t.Fatalf("create: status = %d, Location = %q", w.Code, w.Header().Get("Location"))
 	}
 
 	// duplicate name → err
-	w = doJSON(h, "POST", "/console/secrets", "name=gh_token&value=x", form)
+	w = doJSON(h, "POST", "/console/secrets", "name=gh_token&value=x&csrf_token="+csrf, form)
 	if !strings.Contains(w.Header().Get("Location"), "err=") {
 		t.Fatalf("duplicate create: Location = %q, want err", w.Header().Get("Location"))
 	}
@@ -101,7 +102,7 @@ func TestSecretsCRUDAndCtxSecretE2E(t *testing.T) {
 	if srowBefore == nil {
 		t.Fatal("secret row missing before update")
 	}
-	w = doJSON(h, "POST", "/console/secrets/update", "secret_id="+srowBefore.SecretID+"&description=updated&value=", form)
+	w = doJSON(h, "POST", "/console/secrets/update", "secret_id="+srowBefore.SecretID+"&description=updated&value=&csrf_token="+csrf, form)
 	if !strings.Contains(w.Header().Get("Location"), "ok=") {
 		t.Fatalf("update: status = %d, Location = %q, body = %s", w.Code, w.Header().Get("Location"), w.Body.String())
 	}
@@ -113,7 +114,7 @@ func TestSecretsCRUDAndCtxSecretE2E(t *testing.T) {
 	}
 
 	// delete (by secret_id)
-	w = doJSON(h, "POST", "/console/secrets/"+srow.SecretID+"/delete", "", form)
+	w = doJSON(h, "POST", "/console/secrets/"+srow.SecretID+"/delete", "csrf_token="+csrf, form)
 	if !strings.Contains(w.Header().Get("Location"), "ok=") {
 		t.Fatalf("delete: Location = %q", w.Header().Get("Location"))
 	}
@@ -127,26 +128,27 @@ func TestSecretsCRUDAndCtxSecretE2E(t *testing.T) {
 func TestDuplicateNamesRejected(t *testing.T) {
 	_, h := newTestRouter(t)
 	admin := adminHeaders(t, h)
+	csrf := consoleCSRF(t, h, admin["Cookie"])
 	form := func(body string) map[string]string {
 		return map[string]string{"Content-Type": "application/x-www-form-urlencoded", "Cookie": admin["Cookie"]}
 	}
 
 	// 1) 账户：同名用户第二次创建必须失败
-	w1 := doJSON(h, "POST", "/console/users", "username=dup&password=password-1&role=member", form(""))
+	w1 := doJSON(h, "POST", "/console/users", "username=dup&password=password-1&role=member&csrf_token="+csrf, form(""))
 	if w1.Code != http.StatusSeeOther || !strings.Contains(w1.Header().Get("Location"), "ok=") {
 		t.Fatalf("first user create: %d %q", w1.Code, w1.Header().Get("Location"))
 	}
-	w2 := doJSON(h, "POST", "/console/users", "username=dup&password=password-2&role=member", form(""))
+	w2 := doJSON(h, "POST", "/console/users", "username=dup&password=password-2&role=member&csrf_token="+csrf, form(""))
 	if !strings.Contains(w2.Header().Get("Location"), "err=") {
 		t.Fatalf("duplicate user must be rejected, Location = %q", w2.Header().Get("Location"))
 	}
 
 	// 2) API 密钥：同名密钥第二次生成必须失败（名称全局唯一，含已吊销）
-	k1 := doJSON(h, "POST", "/console/apikeys", "name=dup-key&scopes=tasks&rate_per_min=0&expires_days=0", form(""))
+	k1 := doJSON(h, "POST", "/console/apikeys", "name=dup-key&scopes=tasks&rate_per_min=0&expires_days=0&csrf_token="+csrf, form(""))
 	if !strings.Contains(k1.Header().Get("Location"), "/console/apikeys/revealed") {
 		t.Fatalf("first key create: %q", k1.Header().Get("Location"))
 	}
-	k2 := doJSON(h, "POST", "/console/apikeys", "name=dup-key&scopes=tasks&rate_per_min=0&expires_days=0", form(""))
+	k2 := doJSON(h, "POST", "/console/apikeys", "name=dup-key&scopes=tasks&rate_per_min=0&expires_days=0&csrf_token="+csrf, form(""))
 	if !strings.Contains(k2.Header().Get("Location"), "err=") {
 		t.Fatalf("duplicate api key must be rejected, Location = %q", k2.Header().Get("Location"))
 	}
@@ -160,17 +162,17 @@ func TestDuplicateNamesRejected(t *testing.T) {
 			}
 		}
 	}
-	k3 := doJSON(h, "POST", "/console/apikeys", "name=dup-key&scopes=tasks&rate_per_min=0&expires_days=0", form(""))
+	k3 := doJSON(h, "POST", "/console/apikeys", "name=dup-key&scopes=tasks&rate_per_min=0&expires_days=0&csrf_token="+csrf, form(""))
 	if !strings.Contains(k3.Header().Get("Location"), "err=") {
 		t.Fatalf("reused name after revoke must be rejected, Location = %q", k3.Header().Get("Location"))
 	}
 
 	// 3) 密钥管理：同名密钥第二次创建必须失败
-	s1 := doJSON(h, "POST", "/console/secrets", "name=dup_secret&value=v1", form(""))
+	s1 := doJSON(h, "POST", "/console/secrets", "name=dup_secret&value=v1&csrf_token="+csrf, form(""))
 	if !strings.Contains(s1.Header().Get("Location"), "ok=") {
 		t.Fatalf("first secret create: %q", s1.Header().Get("Location"))
 	}
-	s2 := doJSON(h, "POST", "/console/secrets", "name=dup_secret&value=v2", form(""))
+	s2 := doJSON(h, "POST", "/console/secrets", "name=dup_secret&value=v2&csrf_token="+csrf, form(""))
 	if !strings.Contains(s2.Header().Get("Location"), "err=") {
 		t.Fatalf("duplicate secret must be rejected, Location = %q", s2.Header().Get("Location"))
 	}

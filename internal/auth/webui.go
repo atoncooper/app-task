@@ -14,6 +14,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -41,6 +42,11 @@ const (
 	SessionCookieName = "apptask_session"
 
 	ctxUser = "webui_user" // gin context key for the authed identity
+
+	// csrfFormField is the form/header field console forms present back to
+	// CSRFProtect; ctxCSRF stashes the session's token for template rendering.
+	csrfFormField = "csrf_token"
+	ctxCSRF       = "webui_csrf"
 )
 
 // Session is the identity attached to a browser/API session: it always
@@ -50,6 +56,10 @@ type Session struct {
 	Username string
 	Role     string // admin / member
 	Expiry   time.Time
+	// CSRFToken is the synchronizer token embedded into console forms and
+	// verified by CSRFProtect on unsafe methods (empty on sessions created
+	// before the field existed; CSRFProtect mints one lazily).
+	CSRFToken string
 }
 
 // Authenticator gates the admin console.
@@ -231,10 +241,99 @@ func (a *Authenticator) NewSession(user Session) (string, error) {
 		return "", err
 	}
 	sid := hex.EncodeToString(b)
+	cb := make([]byte, webuiSessionBytes)
+	if _, err := rand.Read(cb); err != nil {
+		return "", err
+	}
+	user.CSRFToken = hex.EncodeToString(cb)
 	if err := a.sessions.save(sid, user, a.ttl); err != nil {
 		return "", err
 	}
 	return sid, nil
+}
+
+// ── CSRF protection (console form flows) ────────────────────────────
+
+// CSRFProtect defends the server-rendered form flows (POST /console/*)
+// against cross-site request forgery with a session-bound synchronizer
+// token: every stored session carries a random CSRFToken, every console
+// form embeds it (base.tmpl "csrf_field" partial), and unsafe methods must
+// present it back. Defense-in-depth on top of the SameSite=Strict cookie —
+// SameSite does not distinguish same-site subdomains.
+//
+// Header credentials (X-WebUI-Token / Bearer) are skipped: browsers never
+// attach them automatically, so they are CSRF-immune by construction, and
+// script callers have no form to embed the token in. Only cookie-attached
+// requests — the single auto-attach vector — are enforced. Safe methods
+// mint a token for sessions created before the field existed and stash it
+// for template rendering.
+func (a *Authenticator) CSRFProtect() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead || c.Request.Method == http.MethodOptions {
+			a.ensureCSRF(c)
+			c.Next()
+			return
+		}
+		cred, _ := c.Cookie(SessionCookieName)
+		if cred == "" {
+			c.Next() // header credential (or anonymous): CSRF-immune / the auth gate owns it
+			return
+		}
+		sess, ok := a.sessions.load(cred)
+		if !ok {
+			c.Next() // stale/unknown cookie: the authentication gate rejects those
+			return
+		}
+		presented := c.PostForm(csrfFormField)
+		if presented == "" {
+			presented = c.GetHeader("X-CSRF-Token")
+		}
+		if sess.CSRFToken == "" || subtle.ConstantTimeCompare([]byte(presented), []byte(sess.CSRFToken)) != 1 {
+			slog.Warn("[AUTH] csrf token rejected", "ip", c.ClientIP(), "path", c.Request.URL.Path)
+			http.Error(c.Writer, "403 csrf token invalid or missing (refresh the page and retry)", http.StatusForbidden)
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+// ensureCSRF mints a CSRF token for sessions created before the field
+// existed (rolling deploys against a shared Redis store) and stashes the
+// session's token on the gin context for the page templates to embed.
+func (a *Authenticator) ensureCSRF(c *gin.Context) {
+	cred, _ := c.Cookie(SessionCookieName)
+	if cred == "" {
+		return
+	}
+	sess, ok := a.sessions.load(cred)
+	if !ok {
+		return
+	}
+	if sess.CSRFToken == "" {
+		b := make([]byte, webuiSessionBytes)
+		if _, err := rand.Read(b); err != nil {
+			return // forms render an empty token; the next POST fails closed
+		}
+		sess.CSRFToken = hex.EncodeToString(b)
+		// Re-save with the session's remaining lifetime, not a fresh TTL.
+		if err := a.sessions.save(cred, sess, time.Until(sess.Expiry)); err != nil {
+			slog.Error("[AUTH] csrf token save failed", "err", err)
+			return
+		}
+	}
+	c.Set(ctxCSRF, sess.CSRFToken)
+}
+
+// CSRFTokenOf returns the session's CSRF token stashed by CSRFProtect, for
+// embedding into console forms (empty for header-credential requests).
+func CSRFTokenOf(c *gin.Context) string {
+	if v, ok := c.Get(ctxCSRF); ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
 }
 
 func (a *Authenticator) Allow(ip string) bool { return a.throttle.allow(ip) }

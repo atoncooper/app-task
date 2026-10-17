@@ -40,6 +40,9 @@ type HTTPExecutor struct {
 
 	mu     sync.Mutex
 	client *http.Client // nil = TLS 配置尚未成功构建（下次派发重试）
+
+	breakersMu sync.Mutex
+	breakers   map[string]*hostBreaker // lazily created per executor host
 }
 
 // HTTPOptions configures the HTTP executor transport.
@@ -60,6 +63,14 @@ type HTTPOptions struct {
 	GatewayHosts  map[string]bool
 	GatewayHeader string // header name; "" = "apikey" (APISIX key-auth default)
 	GatewayApiKey string
+	// Per-host circuit breaker: fast-fail dispatches to an executor host
+	// after BreakerThreshold consecutive availability failures (network
+	// errors / 5xx; a 4xx proves the target is alive and never counts), for
+	// BreakerCooldownSeconds, then admit one half-open probe. Prevents one
+	// dead executor from pinning every dispatch worker in timeout waits.
+	// 0 = disabled (legacy behaviour).
+	BreakerThreshold       int
+	BreakerCooldownSeconds int // 0 = default 60s
 }
 
 // gatewayMatch reports whether the raw URL's host:port is in the allow set
@@ -83,7 +94,30 @@ func NewHTTPExecutor(opts HTTPOptions) *HTTPExecutor {
 	if opts.IdleConnsPerHost <= 0 {
 		opts.IdleConnsPerHost = 32
 	}
-	return &HTTPExecutor{opts: opts}
+	if opts.BreakerCooldownSeconds <= 0 {
+		opts.BreakerCooldownSeconds = 60
+	}
+	return &HTTPExecutor{opts: opts, breakers: map[string]*hostBreaker{}}
+}
+
+// breakerFor returns the per-host breaker, creating it on first use. Nil
+// when the breaker is disabled (BreakerThreshold <= 0) — call sites skip
+// the Allow/Record round-trips entirely then.
+func (e *HTTPExecutor) breakerFor(host string) *hostBreaker {
+	if e.opts.BreakerThreshold <= 0 {
+		return nil
+	}
+	e.breakersMu.Lock()
+	defer e.breakersMu.Unlock()
+	if e.breakers == nil {
+		e.breakers = map[string]*hostBreaker{}
+	}
+	b, ok := e.breakers[host]
+	if !ok {
+		b = newHostBreaker(e.opts.BreakerThreshold, time.Duration(e.opts.BreakerCooldownSeconds)*time.Second)
+		e.breakers[host] = b
+	}
+	return b
 }
 
 // clientForTLS lazily builds the HTTP client. CA 文件读取/解析失败返回错误且
@@ -164,8 +198,26 @@ func (e *HTTPExecutor) Handler() Handler {
 			req.Header.Set("X-Shard-Index", fmt.Sprint(v))
 			req.Header.Set("X-Shard-Total", fmt.Sprint(task.Meta["shard_total"]))
 		}
+		// Per-host circuit breaker (0 threshold = disabled): fast-fail when the
+		// circuit is open instead of queueing another timeout wait. Checked
+		// immediately before Do — every path past Allow flows through the
+		// success/failure recording below, so a half-open probe slot can never
+		// leak on an early return (TLS setup, request build).
+		var br *hostBreaker
+		if e.opts.BreakerThreshold > 0 {
+			if u, perr := url.Parse(rawURL); perr == nil && u.Host != "" {
+				br = e.breakerFor(strings.ToLower(u.Host))
+				if ok, retryAfter := br.Allow(time.Now()); !ok {
+					return fmt.Errorf("%w: circuit open for executor host %s, probe after %s",
+						ErrRetry, u.Host, retryAfter.Truncate(time.Millisecond))
+				}
+			}
+		}
 		resp, err := client.Do(req)
 		if err != nil {
+			if br != nil {
+				br.RecordFailure(time.Now())
+			}
 			// Network-level failure (incl. TLS handshake): transient, let the
 			// retry policy decide.
 			return fmt.Errorf("%w: executor unreachable: %v", ErrRetry, err)
@@ -175,10 +227,21 @@ func (e *HTTPExecutor) Handler() Handler {
 
 		// Async accepted takes precedence over the generic 2xx branch.
 		if resp.StatusCode == http.StatusAccepted && async {
+			if br != nil {
+				br.RecordSuccess()
+			}
 			return ErrAsync // accepted → running, callback will finalize
 		}
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			if br != nil {
+				br.RecordSuccess()
+			}
 			return nil // sync success
+		}
+		// 5xx counts as unavailability; 4xx is a deterministic rejection from
+		// a live server and must not trip the breaker.
+		if br != nil && resp.StatusCode >= 500 {
+			br.RecordFailure(time.Now())
 		}
 		return fmt.Errorf("executor returned %d: %s", resp.StatusCode, truncateBytes(respBody, 500))
 	}

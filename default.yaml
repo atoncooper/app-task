@@ -122,6 +122,13 @@ http_executor:
   gateway_hosts: "${APPTASK__HTTP_EXECUTOR__GATEWAY_HOSTS}"
   gateway_header: "apikey"
   gateway_api_key: "${APPTASK__HTTP_EXECUTOR__GATEWAY_API_KEY}"
+  # 出站熔断器（纯内存，按 executor host 计）：同一目标连续 availability 失败
+  # （网络错误/5xx；4xx 证明对端存活不计入）达 threshold 次即熔断，
+  # cooldown 秒内派发快速失败，之后放一个半开探测请求裁决恢复。
+  # 防什么：单个宕机 executor 把全部派发 worker 钉死在超时等待上
+  # （共享舱壁被打穿，拖垮所有任务的派发节奏）。0 = 关闭。
+  breaker_threshold: 5
+  breaker_cooldown_seconds: 60
 
 lua:
   timeout_seconds: 30           # 单次脚本执行超时
@@ -146,6 +153,31 @@ security:
   # fail-closed). Default off — in-cluster executors are usually private.
   # Env: APPTASK__SECURITY__EXECUTOR_BLOCK_PRIVATE_HOSTS=true
   executor_block_private_hosts: false
+  # IP 黑白名单：deny 优先于 allow；allow 非空 = 白名单模式（列表外全拒）；
+  # 两者都空 = 关闭（默认，向后兼容）。条目为单 IP 或 CIDR（10.0.0.0/8、
+  # 203.0.113.7、::1/128），非法条目启动即 panic（半生效的 ACL 比没有更糟）。
+  # 防什么：绕过网关直连 8001 端口——网关前置部署时把端口收窄到网关网段。
+  # 注意 APISIX 路由的调用源 IP 是网关容器 IP，allow 必须覆盖它；
+  # 该闸门作用于全部路径（含 /health），监控探针网段需一并放行。
+  # env: APPTASK__SECURITY__IP_ACL__ALLOW / APPTASK__SECURITY__IP_ACL__DENY（逗号分隔）
+  ip_acl:
+    allow: []
+    deny: []
+  # 通用 per-IP 请求限速（请求数/分钟/IP）：认证失败节流、per-key 限速之外的
+  # 第三层，不看凭据状态,直接约束单一来源。默认 0 = 关闭——APISIX 前置部署
+  # 时所有网关流量的源 IP 都是网关容器 IP,开启会把整个网关合并进一个桶;
+  # 直连端口部署(无网关)建议开启。/health 与 /assets 豁免。计数为单实例内存。
+  ip_rate_limit:
+    requests_per_minute: 0
+  # HTTP 层幂等：/internal/* 写端点（complete 回调 / email send / script run）
+  # 支持 Idempotency-Key 头。同一凭据 + 同一 key 的重复请求在 TTL 内直接
+  # 返回首次响应（带 Idempotency-Replayed: true），不再产生第二次副作用；
+  # 5xx 不缓存（瞬态失败,重试必须真执行）；执行中的重复请求返回 409。
+  # 默认关闭：执行面本就 at-least-once（执行器按 X-Task-Id 幂等去重），邮件
+  # 队列有唯一约束兜底；第三方调用方无法自带去重时才开启。计数为单实例内存。
+  idempotency:
+    enabled: false
+    ttl_seconds: 600
 
 log:
   level: info       # debug|info|warn|error (APPTASK__LOG__LEVEL)

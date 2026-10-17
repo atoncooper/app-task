@@ -197,6 +197,16 @@ type HTTPExecutorConfig struct {
 	GatewayHosts  string `yaml:"gateway_hosts"`
 	GatewayHeader string `yaml:"gateway_header"`
 	GatewayAPIKey string `yaml:"gateway_api_key"`
+	// Per-host circuit breaker (pure in-memory): open after this many
+	// consecutive availability failures (network errors / 5xx) to one
+	// executor host, fast-fail for breaker_cooldown_seconds, then a single
+	// half-open probe decides. Prevents a dead executor from pinning the
+	// whole dispatch worker pool in timeout waits. 0 = off.
+	// Env: APPTASK__HTTP_EXECUTOR__BREAKER_THRESHOLD
+	BreakerThreshold int `yaml:"breaker_threshold"`
+	// Open-circuit duration before the half-open probe (0 = 60s).
+	// Env: APPTASK__HTTP_EXECUTOR__BREAKER_COOLDOWN_SECONDS
+	BreakerCooldownSeconds int `yaml:"breaker_cooldown_seconds"`
 }
 
 // LuaConfig configures the Lua executor (dynamic scripts, GLUE-style).
@@ -233,6 +243,42 @@ type SecurityConfig struct {
 	// on an isolated network for that threat model.
 	// Env: APPTASK__SECURITY__EXECUTOR_BLOCK_PRIVATE_HOSTS=true|1
 	BlockPrivateExecutorHosts bool `yaml:"executor_block_private_hosts"`
+	// IPACL restricts the source IPs that may reach this service at all.
+	// deny wins over allow; allow non-empty = allowlist mode (everything else
+	// rejected); both empty = gate off (default). Entries are single IPs or
+	// CIDRs. Prevents direct-to-port access bypassing the gateway — in
+	// gateway-fronted deployments restrict the port to the gateway subnet
+	// (note: APISIX-routed calls all arrive from the gateway IP, so allow
+	// entries must cover it). Invalid entries fail loud at startup.
+	// Env: APPTASK__SECURITY__IP_ACL__ALLOW / APPTASK__SECURITY__IP_ACL__DENY
+	// (comma-separated).
+	IPACL IPACLConfig `yaml:"ip_acl"`
+	// IPRateLimit caps requests per minute per client IP across all surfaces
+	// (0 = off, default): the third layer beyond the auth-failure throttle
+	// and the per-key rate cap. Default off because gateway-fronted
+	// deployments see every client behind the gateway IP — enabling there
+	// would rate-limit the whole gateway as one bucket.
+	// Env: APPTASK__SECURITY__IP_RATE_LIMIT__REQUESTS_PER_MINUTE
+	IPRateLimit struct {
+		RequestsPerMinute int `yaml:"requests_per_minute"`
+	} `yaml:"ip_rate_limit"`
+	// Idempotency enables the HTTP-level Idempotency-Key dedup on the
+	// /internal/* write endpoints (off by default: the execution plane is
+	// already at-least-once with executor-side dedup via X-Task-Id, and the
+	// email queue has a uniqueness constraint). Turn it on when third-party
+	// callers cannot dedup themselves. Counters are per-instance memory.
+	// Env: APPTASK__SECURITY__IDEMPOTENCY__ENABLED / __TTL_SECONDS
+	Idempotency struct {
+		Enabled    bool `yaml:"enabled"`
+		TTLSeconds int  `yaml:"ttl_seconds"` // 0 = default 600
+	} `yaml:"idempotency"`
+}
+
+// IPACLConfig lists source-IP allow/deny entries (single IPs or CIDRs).
+// See SecurityConfig.IPACL for semantics.
+type IPACLConfig struct {
+	Allow []string `yaml:"allow"`
+	Deny  []string `yaml:"deny"`
 }
 
 // Load parses embedded default.yaml + applies APPTASK__ env overrides.
@@ -373,6 +419,17 @@ func applyEnvOverrides(cfg *Config) {
 	if v := get("APPTASK__SECURITY__EXECUTOR_BLOCK_PRIVATE_HOSTS"); v != "" {
 		cfg.Security.BlockPrivateExecutorHosts = v == "true" || v == "1"
 	}
+	if v := get("APPTASK__SECURITY__IP_ACL__ALLOW"); v != "" {
+		cfg.Security.IPACL.Allow = splitCSV(v)
+	}
+	if v := get("APPTASK__SECURITY__IP_ACL__DENY"); v != "" {
+		cfg.Security.IPACL.Deny = splitCSV(v)
+	}
+	atoi("APPTASK__SECURITY__IP_RATE_LIMIT__REQUESTS_PER_MINUTE", &cfg.Security.IPRateLimit.RequestsPerMinute)
+	if v := get("APPTASK__SECURITY__IDEMPOTENCY__ENABLED"); v != "" {
+		cfg.Security.Idempotency.Enabled = v == "true" || v == "1"
+	}
+	atoi("APPTASK__SECURITY__IDEMPOTENCY__TTL_SECONDS", &cfg.Security.Idempotency.TTLSeconds)
 	if v := get("APPTASK__LOG__LEVEL"); v != "" {
 		cfg.Log.Level = v
 	}
@@ -382,6 +439,8 @@ func applyEnvOverrides(cfg *Config) {
 	if v := get("APPTASK__HTTP_EXECUTOR__INSECURE_SKIP_VERIFY"); v != "" {
 		cfg.HTTPExecutor.InsecureSkipVerify = v == "true" || v == "1"
 	}
+	atoi("APPTASK__HTTP_EXECUTOR__BREAKER_THRESHOLD", &cfg.HTTPExecutor.BreakerThreshold)
+	atoi("APPTASK__HTTP_EXECUTOR__BREAKER_COOLDOWN_SECONDS", &cfg.HTTPExecutor.BreakerCooldownSeconds)
 	if v := get("APPTASK__LOG__FORMAT"); v != "" {
 		cfg.Log.Format = v
 	}

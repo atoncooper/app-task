@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"app-task/internal/auth"
 	"app-task/internal/config"
@@ -40,6 +41,9 @@ func New(taskSvc *service.TaskService, emailSvc *service.EmailService, notifySvc
 	_ = e.SetTrustedProxies(nil)
 	e.Use(logger.GinLogger())
 	e.Use(logger.GinRecovery())
+	// Source-IP gate before anything expensive: closes the direct-to-port
+	// path (both lists empty in config = no-op passthrough).
+	e.Use(middleware.IPACL(cfg.Security.IPACL.Allow, cfg.Security.IPACL.Deny))
 	e.Use(middleware.SecurityHeaders())
 	e.Use(middleware.CORS(cfg.Security.CORS.AllowOrigins))
 
@@ -80,6 +84,10 @@ func New(taskSvc *service.TaskService, emailSvc *service.EmailService, notifySvc
 	stores := auth.NewStateStores(cfg)
 	r := &Router{taskSvc: taskSvc, emailSvc: emailSvc, notifySvc: notifySvc, scriptGen: service.NewScriptGenService(llm), luaExec: luaExec, cfg: cfg,
 		cipher: cipher, keys: auth.NewKeyService(stores.Throttle, stores.Limiter, stores.Reveals)}
+	// Per-IP request cap across all surfaces (0 = off): registered after the
+	// global middleware so rejected bursts still hit the access log, and
+	// before every auth gate so they are shed before credential work.
+	e.Use(middleware.IPRateLimit(cfg.Security.IPRateLimit.RequestsPerMinute))
 	if cfg.WebUI.Enabled {
 		// Console authenticator shares the session store; its login throttle
 		// stays per-process memory (nil → memory default, pre-existing).
@@ -172,19 +180,32 @@ func (r *Router) registerRoutes(e *gin.Engine) {
 	tasks.DELETE("/:task_id", r.deleteTask)
 	tasks.GET("", r.list)
 
+	// HTTP-level idempotency for the /internal/* write endpoints (disabled
+	// unless security.idempotency.enabled): a retried call presenting the
+	// same Idempotency-Key replays the first 2xx response instead of
+	// executing the side effect again.-nil = passthrough.
+	var idem gin.HandlerFunc
+	if r.cfg.Security.Idempotency.Enabled {
+		ttl := time.Duration(r.cfg.Security.Idempotency.TTLSeconds) * time.Second
+		if ttl <= 0 {
+			ttl = 10 * time.Minute
+		}
+		idem = middleware.Idempotency(ttl)
+	}
+
 	// Async callback: a third-party executor that accepted a task (202) reports
 	// the final outcome here (key-auth). running -> completed | failed.
-	svc.POST("/internal/task/:task_id/complete", r.completeTask)
+	svc.POST("/internal/task/:task_id/complete", idem, r.completeTask)
 
 	// Mail delivery (platform capability): a third-party executor posts a
 	// standardized email (to/cc/subject/html) here; app-task queues + delivers
 	// it with retries (key-auth).
-	svc.POST("/internal/email/send", r.sendEmail)
+	svc.POST("/internal/email/send", idem, r.sendEmail)
 
 	// Script run (platform capability): on-demand execution of a registered
 	// Lua script (script_id + payload), synchronous with the result JSON.
 	// Same pipeline as scheduled dispatch; runs are persisted to script_run.
-	svc.POST("/internal/script/run", r.runScriptAPI)
+	svc.POST("/internal/script/run", idem, r.runScriptAPI)
 
 	// Lua scripts (optional built-in executor, xxl-task GLUE-style): upload =
 	// new version, takes effect immediately. Auth via APISIX key-auth; every

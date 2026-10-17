@@ -6,6 +6,7 @@
 <div class="panel panel-default">
   <div class="panel-body">
     <form method="post" action="/console/tasks" class="form-horizontal" id="task-create-form">
+      {{template "csrf_field" $}}
       <div class="form-group">
         <label class="col-sm-2 control-label">任务属主 uid</label>
         <div class="col-sm-10">

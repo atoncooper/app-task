@@ -29,6 +29,7 @@
         <td class="op-cell">
           {{if eq .StatusRaw "failed"}}
           <form method="post" action="/console/emails/{{.EmailID}}/retry" class="inline-form">
+            {{template "csrf_field" $}}
             <button class="btn btn-danger btn-xs" type="submit">重试</button>
           </form>
           {{end}}

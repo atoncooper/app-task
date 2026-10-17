@@ -124,7 +124,8 @@ func TestAPIKeyConsoleGenerateFlow(t *testing.T) {
 	}
 
 	// generate (admin form post, all scopes, rate 0 = unlimited)
-	w := doJSON(h, "POST", "/console/apikeys", "name=executor-1&expires_days=30&rate_per_min=0&scopes=tasks&scopes=scripts&scopes=internal", map[string]string{
+	csrf := consoleCSRF(t, h, admin["Cookie"])
+	w := doJSON(h, "POST", "/console/apikeys", "name=executor-1&expires_days=30&rate_per_min=0&scopes=tasks&scopes=scripts&scopes=internal&csrf_token="+csrf, map[string]string{
 		"Content-Type": "application/x-www-form-urlencoded",
 		"Cookie":       admin["Cookie"],
 	})
@@ -220,10 +221,11 @@ func TestAPIKeyScopesAndRateLimit(t *testing.T) {
 func TestSelfPasswordChange(t *testing.T) {
 	_, h := newTestRouter(t)
 	admin := adminHeaders(t, h)
+	csrf := consoleCSRF(t, h, admin["Cookie"])
 
 	// wrong current password → rejected
 	w := doJSON(h, "POST", "/console/password",
-		"old_password=wrong&new_password=new-pass-123&new_password2=new-pass-123", map[string]string{
+		"old_password=wrong&new_password=new-pass-123&new_password2=new-pass-123&csrf_token="+csrf, map[string]string{
 			"Content-Type": "application/x-www-form-urlencoded",
 			"Cookie":       admin["Cookie"],
 		})
@@ -233,7 +235,7 @@ func TestSelfPasswordChange(t *testing.T) {
 
 	// correct flow: change, old password stops working, new one logs in
 	w = doJSON(h, "POST", "/console/password",
-		"old_password=app-task-admin&new_password=new-pass-123&new_password2=new-pass-123", map[string]string{
+		"old_password=app-task-admin&new_password=new-pass-123&new_password2=new-pass-123&csrf_token="+csrf, map[string]string{
 			"Content-Type": "application/x-www-form-urlencoded",
 			"Cookie":       admin["Cookie"],
 		})
@@ -262,9 +264,10 @@ func TestScriptIDAutoUUID(t *testing.T) {
 		"Content-Type": "application/x-www-form-urlencoded",
 		"Cookie":       admin["Cookie"],
 	}
+	csrf := consoleCSRF(t, h, admin["Cookie"])
 
 	// console create without script_id → server assigns a UUID
-	w := doJSON(h, "POST", "/console/scripts", "name=自动生成&source=function handle(ctx) end", form)
+	w := doJSON(h, "POST", "/console/scripts", "name=自动生成&source=function handle(ctx) end&csrf_token="+csrf, form)
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("console create: status = %d, body = %s", w.Code, w.Body.String())
 	}
@@ -277,14 +280,14 @@ func TestScriptIDAutoUUID(t *testing.T) {
 	}
 
 	// task mount: lua task referencing the UUID script_id passes validation
-	lt := doJSON(h, "POST", "/console/tasks", "task_type=lua&trigger_time=2030-01-01T00:00&payload=%7B%22script_id%22%3A%22"+assigned+"%22%7D", form)
+	lt := doJSON(h, "POST", "/console/tasks", "task_type=lua&trigger_time=2030-01-01T00:00&payload=%7B%22script_id%22%3A%22"+assigned+"%22%7D&csrf_token="+csrf, form)
 	if !strings.Contains(lt.Header().Get("Location"), "ok=") {
 		t.Fatalf("lua task mount: status = %d, Location = %q", lt.Code, lt.Header().Get("Location"))
 	}
 
 	// console create with a client-posted script_id → still server-assigned
 	// (the identifier is never a user input)
-	w = doJSON(h, "POST", "/console/scripts", "script_id=user-chosen&name=忽略手填&source=function handle(ctx) end", form)
+	w = doJSON(h, "POST", "/console/scripts", "script_id=user-chosen&name=忽略手填&source=function handle(ctx) end&csrf_token="+csrf, form)
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("console create with posted id: status = %d", w.Code)
 	}
@@ -327,7 +330,8 @@ func TestTaskOwnerAutoUID(t *testing.T) {
 	}
 
 	// console create without uid → owned by the logged-in admin (webui_user id 1)
-	w := doJSON(h, "POST", "/console/tasks", "task_type=http&executor_url=http://e1&trigger_time=2030-01-01T00:00", form)
+	csrf := consoleCSRF(t, h, admin["Cookie"])
+	w := doJSON(h, "POST", "/console/tasks", "task_type=http&executor_url=http://e1&trigger_time=2030-01-01T00:00&csrf_token="+csrf, form)
 	if !strings.Contains(w.Header().Get("Location"), "ok=") {
 		t.Fatalf("console task create: Location = %q", w.Header().Get("Location"))
 	}

@@ -19,13 +19,16 @@
         <td>{{.UpdatedAt}}</td>
         <td class="op-cell">
           <form method="post" action="/console/channels/{{.Name}}/toggle" class="inline-form">
+            {{template "csrf_field" $}}
             <button class="btn btn-default btn-xs" type="submit">{{if eq .Enabled "启用"}}停用{{else}}启用{{end}}</button>
           </form>
           <form method="post" action="/console/channels/{{.Name}}/test" class="inline-form">
+            {{template "csrf_field" $}}
             <button class="btn btn-info btn-xs" type="submit">测试</button>
           </form>
           <form method="post" action="/console/channels/{{.Name}}/delete" class="inline-form"
                 onsubmit="return confirm('确定删除渠道 {{.Name}}？引用它的 notify 任务将发送失败。');">
+            {{template "csrf_field" $}}
             <button class="btn btn-danger btn-xs" type="submit">删除</button>
           </form>
         </td>
@@ -42,6 +45,7 @@
   <div class="panel-heading">{{if .Items}}新建 / 更新（同名即覆盖配置）{{else}}新建渠道{{end}}</div>
   <div class="panel-body">
     <form method="post" action="/console/channels" class="form-horizontal" id="channel-create-form">
+      {{template "csrf_field" $}}
       <div class="form-group">
         <label class="col-sm-2 control-label" for="ch-name">名称</label>
         <div class="col-sm-4">

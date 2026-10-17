@@ -32,6 +32,7 @@
         <td>{{.UpdatedAt}}</td>
         <td class="op-cell">
           <form method="post" action="/console/scripts/{{.ScriptID}}/toggle" class="inline-form">
+            {{template "csrf_field" $}}
             <input type="hidden" name="enabled" value="{{if .Enabled}}0{{else}}1{{end}}">
             <button class="btn btn-default btn-xs" type="submit">{{if .Enabled}}停用{{else}}启用{{end}}</button>
           </form>

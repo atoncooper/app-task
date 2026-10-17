@@ -4,6 +4,7 @@
   <span class="id-chip">{{.ScriptID}}</span>
   <span class="label label-primary">v{{.ScriptVersion}}</span>
   <form method="post" action="/console/scripts/{{.ScriptID}}/toggle" class="inline-form">
+    {{template "csrf_field" $}}
     <input type="hidden" name="enabled" value="{{if .Enabled}}0{{else}}1{{end}}">
     <button class="btn btn-default btn-sm" type="submit">{{if .Enabled}}停用{{else}}启用{{end}}</button>
   </form>

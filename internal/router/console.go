@@ -25,6 +25,7 @@ import (
 	"app-task/internal/dto"
 	"app-task/internal/model"
 	"app-task/internal/repo"
+	"app-task/internal/router/middleware"
 	"app-task/internal/service"
 	"app-task/web"
 
@@ -96,6 +97,7 @@ type BaseData struct {
 	PageTitle string
 	PageDesc  string
 	Flash     *flashData
+	CSRF      string // session-bound CSRF token for console forms ("" = header credential)
 }
 
 // newBase builds the shell data from the request: current user, active tab,
@@ -110,6 +112,7 @@ func newBase(c *gin.Context, active, title, desc string) BaseData {
 	} else if msg := c.Query("err"); msg != "" {
 		b.Flash = &flashData{Kind: "err", Msg: msg}
 	}
+	b.CSRF = auth.CSRFTokenOf(c)
 	return b
 }
 
@@ -1282,8 +1285,10 @@ func (r *Router) registerPages(e *gin.Engine, authr *auth.Authenticator) {
 	e.StaticFS("/assets", http.FS(noHTMLFS{assetFS}))
 
 	e.GET("/login", loginPageHandler(authr))
-	e.POST("/login", loginSubmitHandler(authr))
-	e.POST("/logout", logoutSubmitHandler(authr))
+	// Login/logout have no session to bind a synchronizer token to, so the
+	// cross-site check falls to SameOrigin (login-CSRF hardening).
+	e.POST("/login", middleware.SameOrigin(r.cfg.Security.CORS.AllowOrigins), loginSubmitHandler(authr))
+	e.POST("/logout", middleware.SameOrigin(r.cfg.Security.CORS.AllowOrigins), logoutSubmitHandler(authr))
 
 	// Root: bounce to the console when logged in, else to the login page.
 	e.GET("/", func(c *gin.Context) {
@@ -1296,8 +1301,9 @@ func (r *Router) registerPages(e *gin.Engine, authr *auth.Authenticator) {
 
 	// Console pages live under /console: the root path space is shared with
 	// the APISIX-facing gateway contract endpoints (/tasks/*, /scripts*),
-	// which must not move.
-	pages := e.Group("/console", authr.PageGate())
+	// which must not move. CSRFProtect enforces the session-bound form token
+	// on the POST handlers below (header credentials pass untouched).
+	pages := e.Group("/console", authr.PageGate(), authr.CSRFProtect())
 	pages.GET("", r.pageDashboard)
 	pages.GET("/tasks", r.pageTasks)
 	pages.GET("/tasks/new", r.pageTaskNew)

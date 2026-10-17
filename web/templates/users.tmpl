@@ -16,11 +16,13 @@
         <td>{{.CreatedAt}}</td>
         <td class="op-cell">
           <form method="post" action="/console/users/{{.UserID}}/password" class="row-form">
+            {{template "csrf_field" $}}
             <input type="password" name="password" required minlength="8" maxlength="128" placeholder="新密码（≥8 位）" autocomplete="new-password">
             <button class="btn btn-default btn-xs" type="submit">改密</button>
           </form>
           {{if .Deletable}}
           <form method="post" action="/console/users/{{.UserID}}/delete" class="row-form" onsubmit="return confirm('确认删除账户 {{.Username}}？')">
+            {{template "csrf_field" $}}
             <button class="btn btn-danger btn-xs" type="submit">删除</button>
           </form>
           {{end}}
@@ -42,6 +44,7 @@
         <h4 class="modal-title" id="user-modal-title">添加账户</h4>
       </div>
       <form method="post" action="/console/users">
+        {{template "csrf_field" $}}
         <div class="modal-body">
           <div class="form-group">
             <label>用户名（2–64 字符）</label>
